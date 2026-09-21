@@ -1,5 +1,9 @@
 name: CI
 
+# This package depends on its sibling through bun's "workspace:*", so a bare
+# clone cannot resolve it. The sibling is checked out alongside and a throwaway
+# workspace root assembled, the same way the app repos build for Pages.
+
 on:
   push:
     branches: [main]
@@ -10,8 +14,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: engine
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/renderer
+          path: renderer
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      - name: Assemble a workspace root
+        run: |
+          cat > package.json <<'JSON'
+          { "name": "ci-workspace", "private": true, "workspaces": ["engine", "renderer"] }
+          JSON
       - run: bun install
-      - run: bun run typecheck
+      - run: bun run --cwd engine typecheck

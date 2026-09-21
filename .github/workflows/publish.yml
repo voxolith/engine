@@ -3,6 +3,9 @@ name: Publish to npm
 # Publishes @voxolith/engine when a version tag (v1.2.3) is pushed. The tag must
 # match package.json "version". Needs the NPM_TOKEN repository secret (an npm
 # automation token with publish rights on the @voxolith scope).
+#
+# The sibling is checked out alongside because this package depends on it
+# through "workspace:*"; bun rewrites that to a concrete version on publish.
 
 on:
   push:
@@ -16,12 +19,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: engine
+      - uses: actions/checkout@v4
+        with:
+          repository: voxolith/renderer
+          path: renderer
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      - name: Assemble a workspace root
+        run: |
+          cat > package.json <<'JSON'
+          { "name": "publish-workspace", "private": true, "workspaces": ["engine", "renderer"] }
+          JSON
       - run: bun install
-      - run: bun run typecheck
+      - run: bun run --cwd engine typecheck
       - name: Check tag matches package.json version
+        working-directory: engine
         run: |
           pkg="v$(jq -r .version package.json)"
           if [ "$pkg" != "$GITHUB_REF_NAME" ]; then
@@ -29,10 +44,12 @@ jobs:
             exit 1
           fi
       - name: Publish
+        working-directory: engine
         env:
           NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: bun publish --access public
       - name: GitHub release
+        working-directory: engine
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release create "$GITHUB_REF_NAME" --generate-notes
