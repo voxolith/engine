@@ -79,3 +79,75 @@ export function blob(vol: Volume, o: BlobOptions, value: number): number {
       }
   return filled;
 }
+
+export interface FacetOptions {
+  centre: Vec3;
+  /** Half-extents of the mass being cut, used to place each plane on its surface. */
+  radii: Vec3;
+  /** Number of cutting planes. */
+  count: number;
+  /** Fraction of the extent each plane chops off, as [min, max]. */
+  depth: [number, number];
+  /** Keep planes from undercutting the base: normals need y above this. Default -0.25. */
+  minUp?: number;
+  rng: () => number;
+}
+
+/**
+ * Cleave a solid with random planes, clearing everything beyond each one.
+ *
+ * Noise displacement alone only makes lumps, and a lumpy ellipsoid reads as a
+ * potato rather than a stone. Rock breaks along planes: a handful of cuts gives
+ * flat facets meeting at hard edges, which is most of what makes a boulder look
+ * like one. Each plane sits on the ellipsoid's surface along its normal (the
+ * support function), pulled in by a random fraction, so the cut size scales
+ * with the rock and with the direction it faces.
+ */
+export interface FacetPlane {
+  nx: number;
+  ny: number;
+  nz: number;
+  /** Offset from `centre` along the normal. */
+  d: number;
+}
+
+export function facet(vol: Volume, o: FacetOptions): { removed: number; planes: FacetPlane[] } {
+  const [cx, cy, cz] = o.centre;
+  const [rx, ry, rz] = o.radii;
+  const minUp = o.minUp ?? -0.25;
+  const planes: FacetPlane[] = [];
+  for (let i = 0; i < o.count; i++) {
+    let nx = 0, ny = 0, nz = 0;
+    // Broken stone tends to a flat-ish top and steep sides; fully random normals
+    // give a faceted sphere instead. Plane 0 caps the top, odd planes stay steep.
+    // Only lean on these, not force them: a hard cap and sheer sides every time
+    // reads as a sawn drum, not a stone.
+    const kind = i === 0 && o.rng() < 0.6 ? "top" : i % 3 === 1 ? "side" : "any";
+    for (let tries = 0; tries < 8; tries++) {
+      nx = o.rng() * 2 - 1; ny = o.rng() * 2 - 1; nz = o.rng() * 2 - 1;
+      if (kind === "top") { nx *= 0.9; nz *= 0.9; ny = 1; }
+      else if (kind === "side") ny *= 0.6;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      nx /= l; ny /= l; nz /= l;
+      if (ny >= minUp) break;
+    }
+    const support = Math.hypot(rx * nx, ry * ny, rz * nz);
+    // Skew toward shallow cuts: many small facets and the odd deep break.
+    const cut = o.depth[0] + Math.pow(o.rng(), 1.6) * (o.depth[1] - o.depth[0]);
+    planes.push({ nx, ny, nz, d: support * (1 - cut) });
+  }
+  let removed = 0;
+  for (let i = 0; i < vol.data.length; i++) {
+    if (vol.data[i] === 0) continue;
+    const x = i % vol.sx, y = ((i / vol.sx) | 0) % vol.sy, z = (i / (vol.sx * vol.sy)) | 0;
+    const px = x + 0.5 - cx, py = y + 0.5 - cy, pz = z + 0.5 - cz;
+    for (const pl of planes) {
+      if (px * pl.nx + py * pl.ny + pz * pl.nz > pl.d) {
+        vol.data[i] = 0;
+        removed++;
+        break;
+      }
+    }
+  }
+  return { removed, planes };
+}
