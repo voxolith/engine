@@ -93,6 +93,25 @@ export class PaletteAllocator {
   }
 }
 
+/**
+ * Material block for a single entity placed at `slotMin`, the material twin of
+ * entityPalette. Undefined when no role declares a hint, so the renderer keeps
+ * its cheaper flat-palette path.
+ */
+export function entityMaterials(model: EntityModel, slotMin = 1): Float32Array | undefined {
+  let any = false;
+  const m = new Float32Array(256 * 8);
+  for (let i = 0; i < model.roles.length; i++) {
+    const s = slotMin + i;
+    if (s > 255) break;
+    const hint = model.roles[i].material;
+    if (!hint) continue;
+    any = true;
+    writeMaterial(m, s, hint);
+  }
+  return any ? m : undefined;
+}
+
 function writeMaterial(m: Float32Array, slot: number, h: MaterialHint): void {
   const o = slot * 8;
   m[o] = MATERIAL_KIND[h.kind];
