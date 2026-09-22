@@ -13,6 +13,8 @@ export { entityPalette, modelAt, modelIndex, roleHistogram, roleValue, voxelCoun
 
 export type { Orientation } from "./orient";
 export { ORIENTATIONS, orientAnchor, orientModel, orientVoxel, orientedSize, swapsXZ } from "./orient";
+export type { BrickTarget } from "./sink";
+export { blitModelToBricks } from "./sink";
 export type { Variant, VariantPool, VariantPoolOptions } from "./variants";
 export { makeVariantPool } from "./variants";
 

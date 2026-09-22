@@ -3,6 +3,8 @@
 //   bun run --cwd engine verify
 
 import { blitModel, PaletteAllocator } from "../src/palette";
+import { blitModelToBricks } from "../src/sink";
+import { BrickGrid } from "@voxolith/renderer/core";
 import { ORIENTATIONS, orientModel, orientedSize, orientAnchor, type Orientation } from "../src/orient";
 import { makeVariantPool } from "../src/variants";
 import { voxelCount } from "../src/entity";
@@ -103,6 +105,55 @@ console.log("\nblit with orientation:");
     if (a[1] !== model.anchor[1]) anchored = false;
   }
   ok(anchored, "oriented anchors stay inside the oriented box and keep their height");
+}
+
+console.log("\nbrick sink (no dense array):");
+{
+  // Writing a model through the sink must land exactly where blitModel puts it
+  // in a dense world — that equivalence is the whole basis for dropping the
+  // dense array on large scenes.
+  const model = makeModel(7, 5, 6);
+  const size = { x: 48, y: 24, z: 48 };
+  let same = true;
+  let firstBad = "";
+  for (const o of ORIENTATIONS) {
+    const dense = { size, data: new Uint8Array(size.x * size.y * size.z) };
+    blitModel(dense, model, { x: 20, y: 4, z: 26 }, 30, o as Orientation);
+
+    const bricks = new BrickGrid(size);
+    blitModelToBricks(
+      { edit: (box, fill) => { bricks.editBox(box, fill); } },
+      model, { x: 20, y: 4, z: 26 }, 30, o as Orientation,
+    );
+    for (let z = 0; z < size.z && same; z++)
+      for (let y = 0; y < size.y && same; y++)
+        for (let x = 0; x < size.x && same; x++) {
+          const want = dense.data[x + y * size.x + z * size.x * size.y];
+          if (bricks.get(x, y, z) !== want) {
+            same = false;
+            firstBad = `orientation ${o} at ${x},${y},${z}: dense ${want}, bricks ${bricks.get(x, y, z)}`;
+          }
+        }
+  }
+  ok(same, "blitModelToBricks matches blitModel for all 8 orientations", firstBad);
+
+  // Two overlapping stamps must compose the same way too.
+  const size2 = { x: 32, y: 16, z: 32 };
+  const dense = { size: size2, data: new Uint8Array(size2.x * size2.y * size2.z) };
+  const bricks = new BrickGrid(size2);
+  const target = { edit: (box: any, fill: any) => { bricks.editBox(box, fill); } };
+  const m1 = makeModel(6, 6, 6);
+  const m2 = makeModel(5, 7, 4);
+  blitModel(dense, m1, { x: 12, y: 2, z: 12 }, 20);
+  blitModelToBricks(target, m1, { x: 12, y: 2, z: 12 }, 20);
+  blitModel(dense, m2, { x: 14, y: 3, z: 13 }, 40);
+  blitModelToBricks(target, m2, { x: 14, y: 3, z: 13 }, 40);
+  let overlapSame = true;
+  for (let z = 0; z < size2.z && overlapSame; z++)
+    for (let y = 0; y < size2.y && overlapSame; y++)
+      for (let x = 0; x < size2.x && overlapSame; x++)
+        if (bricks.get(x, y, z) !== dense.data[x + y * size2.x + z * size2.x * size2.y]) overlapSame = false;
+  ok(overlapSame, "overlapping stamps compose identically");
 }
 
 console.log("\nvariant pool:");
