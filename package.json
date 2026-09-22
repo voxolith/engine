@@ -5,19 +5,43 @@
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
-  "repository": { "type": "git", "url": "git+https://github.com/voxolith/engine.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/voxolith/engine.git"
+  },
   "homepage": "https://github.com/voxolith/engine#readme",
   "bugs": "https://github.com/voxolith/engine/issues",
-  "keywords": ["voxel", "entity", "procedural", "generator", "webgpu", "voxolith"],
-  "files": ["src", "README.md", "LICENSE"],
+  "keywords": [
+    "voxel",
+    "entity",
+    "procedural",
+    "generator",
+    "webgpu",
+    "voxolith"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "exports": {
     ".": "./src/index.ts",
     "./build": "./src/build/index.ts",
     "./preview": "./src/preview/index.ts",
     "./vox": "./src/vox.ts"
   },
-  "publishConfig": { "access": "public" },
-  "scripts": { "typecheck": "tsc --noEmit" },
-  "dependencies": { "@voxolith/renderer": "workspace:*" },
-  "devDependencies": { "@types/node": "^26.6.2", "typescript": "^7.0.2" }
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "verify": "bun tools/verify.ts"
+  },
+  "dependencies": {
+    "@voxolith/renderer": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
+  }
 }

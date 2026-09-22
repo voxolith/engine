@@ -7,6 +7,7 @@
 // `base + r - 1` in the world grid.
 
 import type { Entity, EntityModel, MaterialHint, RGB, Role } from "./entity";
+import { orientAnchor, orientVoxel, type Orientation } from "./orient";
 
 const MATERIAL_KIND = { diffuse: 0, metal: 1, glass: 2, emit: 3 } as const;
 
@@ -110,19 +111,26 @@ export function blitModel(
   model: EntityModel,
   origin: { x: number; y: number; z: number },
   base: number,
+  orientation: Orientation = 0,
 ): { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } | null {
   const { x: sx, y: sy, z: sz } = model.size;
-  const ox = Math.round(origin.x - model.anchor[0]);
-  const oy = Math.round(origin.y - model.anchor[1]);
-  const oz = Math.round(origin.z - model.anchor[2]);
+  // The orientation is applied while writing, so a rotated placement costs
+  // nothing extra and never materialises a second copy of the model.
+  const anchor = orientation === 0 ? model.anchor : orientAnchor(orientation, model.anchor, model.size);
+  const ox = Math.round(origin.x - anchor[0]);
+  const oy = Math.round(origin.y - anchor[1]);
+  const oz = Math.round(origin.z - anchor[2]);
   const W = world.size;
+  const p: [number, number, number] = [0, 0, 0];
   let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
   for (let z = 0; z < sz; z++)
     for (let y = 0; y < sy; y++)
       for (let x = 0; x < sx; x++) {
         const v = model.data[x + y * sx + z * sx * sy];
         if (v === 0) continue;
-        const wx = ox + x, wy = oy + y, wz = oz + z;
+        if (orientation !== 0) orientVoxel(orientation, x, y, z, model.size, p);
+        else { p[0] = x; p[1] = y; p[2] = z; }
+        const wx = ox + p[0], wy = oy + p[1], wz = oz + p[2];
         if (wx < 0 || wy < 0 || wz < 0 || wx >= W.x || wy >= W.y || wz >= W.z) continue;
         world.data[wx + wy * W.x + wz * W.x * W.y] = base + v - 1;
         if (wx < x0) x0 = wx;

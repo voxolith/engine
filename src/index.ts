@@ -11,6 +11,11 @@
 export type { Entity, EntityModel, MaterialHint, RGB, Role, Size, Vec3 } from "./entity";
 export { entityPalette, modelAt, modelIndex, roleHistogram, roleValue, voxelCount } from "./entity";
 
+export type { Orientation } from "./orient";
+export { ORIENTATIONS, orientAnchor, orientModel, orientVoxel, orientedSize, swapsXZ } from "./orient";
+export type { Variant, VariantPool, VariantPoolOptions } from "./variants";
+export { makeVariantPool } from "./variants";
+
 export type { EntityGenerator, ParamSpec } from "./generator";
 export {
   clearGenerators,
