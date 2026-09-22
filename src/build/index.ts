@@ -40,3 +40,6 @@ export type { CarveOptions, CarveStats, Hull, Mask, ShadeOptions } from "./canop
 
 export { placeClusters, spotsAlong } from "./cluster";
 export type { ClusterOptions, ClusterResult, ClusterSpot } from "./cluster";
+
+export { blob } from "./blob";
+export type { BlobOptions } from "./blob";
