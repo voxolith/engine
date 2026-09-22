@@ -4,6 +4,8 @@
 
 import { blitModel, PaletteAllocator } from "../src/palette";
 import { blitModelToBricks } from "../src/sink";
+import { makeChunkedWorld } from "../src/chunks";
+import { scatterRegion } from "../src/scatter";
 import { BrickGrid } from "@voxolith/renderer/core";
 import { ORIENTATIONS, orientModel, orientedSize, orientAnchor, type Orientation } from "../src/orient";
 import { makeVariantPool } from "../src/variants";
@@ -154,6 +156,76 @@ console.log("\nbrick sink (no dense array):");
       for (let x = 0; x < size2.x && overlapSame; x++)
         if (bricks.get(x, y, z) !== dense.data[x + y * size2.x + z * size2.x * size2.y]) overlapSame = false;
   ok(overlapSame, "overlapping stamps compose identically");
+}
+
+console.log("\nchunked world:");
+{
+  // The property everything rests on: a chunk must come out the same whatever
+  // order chunks were built in. Build the same world twice, once in reading
+  // order and once shuffled, and compare every voxel.
+  const size = { x: 128, y: 32, z: 128 };
+  const CHUNK = 32;
+  const model = makeModel(9, 11, 7); // wider than a chunk is tall — it straddles
+
+  function buildWorld(order: "forward" | "shuffled"): BrickGrid {
+    const bricks = new BrickGrid(size);
+    const target = {
+      edit: (box: any, fill: any) => { bricks.editBox(box, fill); },
+      clear: (box: any) => { bricks.clearBox(box); },
+    };
+    const world = makeChunkedWorld({
+      target, size, chunk: CHUNK, seed: 99,
+      generate(ctx) {
+        // Terrain: a flat slab, so any difference is down to entity placement.
+        ctx.edit({ ...ctx.box, y1: 3 }, (cells) => { cells.fill(7); return true; });
+        // Scan a margin beyond the chunk so entities rooted outside still draw
+        // the part of themselves that reaches in.
+        const M = 16;
+        scatterRegion({ cell: 24, seed: 99, salt: 1 },
+          ctx.box.x0 - M, ctx.box.z0 - M, ctx.box.x1 + M, ctx.box.z1 + M,
+          (pt) => {
+            if (pt.rng() > 0.6) return;
+            const o = Math.floor(pt.rng() * 8) as Orientation;
+            ctx.blit(model, { x: pt.x, y: 4, z: pt.z }, 20, o);
+          });
+      },
+    });
+    const all: [number, number][] = [];
+    for (let cz = 0; cz < size.z / CHUNK; cz++) for (let cx = 0; cx < size.x / CHUNK; cx++) all.push([cx, cz]);
+    if (order === "shuffled") {
+      const r = seededRandom(5);
+      for (let i = all.length - 1; i > 0; i--) { const j = (r() * (i + 1)) | 0; [all[i], all[j]] = [all[j], all[i]]; }
+    }
+    // focus() queues by distance, so drive the order explicitly.
+    for (const [cx, cz] of all) {
+      world.focus(cx * CHUNK + CHUNK / 2, cz * CHUNK + CHUNK / 2, 1, Infinity);
+      world.step(1e9);
+    }
+    return bricks;
+  }
+
+  const a = buildWorld("forward");
+  const b = buildWorld("shuffled");
+  let diff = 0;
+  let firstBad = "";
+  for (let z = 0; z < size.z; z++)
+    for (let y = 0; y < size.y; y++)
+      for (let x = 0; x < size.x; x++)
+        if (a.get(x, y, z) !== b.get(x, y, z)) {
+          if (!diff) firstBad = `at ${x},${y},${z}: ${a.get(x, y, z)} vs ${b.get(x, y, z)}`;
+          diff++;
+        }
+  ok(diff === 0, "chunk build order does not change the world", `${diff} voxels differ, ${firstBad}`);
+  ok(a.stats().used > 0, "the chunked world actually built something", `${a.stats().used} bricks`);
+
+  // Eviction must free bricks and leave neighbours untouched.
+  const before = a.stats().used;
+  a.clearBox({ x0: 0, y0: 0, z0: 0, x1: CHUNK - 1, y1: size.y - 1, z1: CHUNK - 1 });
+  const after = a.stats().used;
+  ok(after < before, "evicting a chunk frees its bricks", `${before} -> ${after}`);
+  let survived = 0;
+  for (let z = CHUNK; z < size.z; z++) for (let x = CHUNK; x < size.x; x++) if (a.get(x, 2, z)) survived++;
+  ok(survived > 0, "  neighbouring chunks survive the eviction", `${survived} voxels left`);
 }
 
 console.log("\nvariant pool:");

@@ -13,6 +13,10 @@ export { entityPalette, modelAt, modelIndex, roleHistogram, roleValue, voxelCoun
 
 export type { Orientation } from "./orient";
 export { ORIENTATIONS, orientAnchor, orientModel, orientVoxel, orientedSize, swapsXZ } from "./orient";
+export type { Box, ChunkContext, ChunkedWorld, ChunkedWorldOptions } from "./chunks";
+export { makeChunkedWorld } from "./chunks";
+export type { ScatterOptions, ScatterPoint } from "./scatter";
+export { scatterRegion } from "./scatter";
 export type { BrickTarget } from "./sink";
 export { blitModelToBricks } from "./sink";
 export type { Variant, VariantPool, VariantPoolOptions } from "./variants";

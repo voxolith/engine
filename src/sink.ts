@@ -35,12 +35,31 @@ export function blitModelToBricks(
   origin: { x: number; y: number; z: number },
   base: number,
   orientation: Orientation = 0,
+  /**
+   * Restrict writes to this world-space box. Chunked worlds need it: a chunk
+   * draws every entity that reaches into it, including ones rooted in its
+   * neighbours, and must write only its own voxels so the result does not
+   * depend on which chunk was generated first.
+   */
+  clip?: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number },
 ): void {
   const { x: sx, y: sy, z: sz } = model.size;
   const anchor = orientation === 0 ? model.anchor : orientAnchor(orientation, model.anchor, model.size);
   const ox = Math.round(origin.x - anchor[0]);
   const oy = Math.round(origin.y - anchor[1]);
   const oz = Math.round(origin.z - anchor[2]);
+  // Reject against the clip box before touching the model. A chunked world
+  // offers every chunk each entity that could reach it, so most calls here are
+  // misses, and a miss must not cost a scan of the whole model.
+  if (clip) {
+    const swap = (orientation & 1) === 1;
+    const ex = swap ? sz : sx;
+    const ez = swap ? sx : sz;
+    if (ox > clip.x1 || ox + ex - 1 < clip.x0) return;
+    if (oy > clip.y1 || oy + sy - 1 < clip.y0) return;
+    if (oz > clip.z1 || oz + ez - 1 < clip.z0) return;
+  }
+
   // Bucket the model's solid voxels by destination brick in one pass. Visiting
   // the model once per brick instead would be quadratic: an oak is 462k cells
   // spread over ~900 bricks.
@@ -61,6 +80,8 @@ export function blitModelToBricks(
           p[2] = z;
         }
         const wx = ox + p[0], wy = oy + p[1], wz = oz + p[2];
+        if (clip && (wx < clip.x0 || wx > clip.x1 || wy < clip.y0 || wy > clip.y1 || wz < clip.z0 || wz > clip.z1))
+          continue;
         const cx = Math.floor(wx / B), cy = Math.floor(wy / B), cz = Math.floor(wz / B);
         if (cx < bx0) bx0 = cx;
         if (cy < by0) by0 = cy;
