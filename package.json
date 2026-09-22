@@ -27,8 +27,6 @@
   "exports": {
     ".": "./src/index.ts",
     "./worker": "./src/worker/index.ts",
-    "./build": "./src/build/index.ts",
-    "./preview": "./src/preview/index.ts",
     "./vox": "./src/vox.ts"
   },
   "publishConfig": {

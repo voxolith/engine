@@ -36,22 +36,17 @@ and an entity can be restyled — season, faction, damage — without regenerati
 | import | contents |
 |---|---|
 | `@voxolith/engine` | entity and generator contracts, registry, palette allocation, placement |
-| `@voxolith/engine/build` | authoring toolkit: dense volumes, voxel primitives, vectors, seeded noise |
-| `@voxolith/engine/preview` | CPU renderer and contact sheets (Node/bun only) |
 | `@voxolith/engine/vox` | MagicaVoxel import and export |
+| `@voxolith/engine/worker` | off-thread generation pool |
 
-## The authoring toolkit
+## Authoring lives with the generators
 
-`Volume` is a dense working grid with cropping, surface queries and a 6-connected flood, which is
-how a generator proves its output is one piece. `capsule` rasterises tapered limbs exactly;
-`line3` walks thin ones with a 3D DDA so they stay 6-connected. `makeNoise` is the shared seeded
-value noise.
-
-## The preview renderer
-
-Headless rendering for generator work: a DDA raymarcher with coarse empty-space skipping, a sun
-shadow ray, face ambient occlusion and a ground plane, plus captioned contact sheets and a PNG
-writer. Shadow and occlusion are not decoration — without them a canopy cannot be judged.
+The engine consumes baked models: it places, orients, palettes, streams and blits them, and it
+holds the generator *contract* (`EntityGenerator`, `ParamSpec`, the registry, share codes) so a
+host can build a model from a seed at runtime. It does not author them. The toolkit generators are
+written with (dense volumes, rasterisers, noise, branch growth, canopy carving, rock masses) and
+the headless preview renderer are
+[`@voxolith/gen-kit`](https://github.com/voxolith/generators/tree/main/kit), in the generators repo.
 
 ## Development
 

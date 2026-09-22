@@ -2,11 +2,14 @@
 //
 // An entity is a voxel model with an anchor and named colour roles, produced
 // from a `.vox` file or by a generator package. This barrel is runtime-safe
-// (no filesystem, no GPU). Two subpaths carry the heavier pieces:
+// (no filesystem, no GPU).
 //
-//   @voxolith/engine/build    authoring toolkit: volumes, shapes, noise
-//   @voxolith/engine/preview  CPU renderer for headless previews
 //   @voxolith/engine/vox      MagicaVoxel import and export
+//   @voxolith/engine/worker   off-thread generation pool
+//
+// The engine consumes baked models; it does not author them. The authoring
+// toolkit (volumes, rasterisers, noise, branch growth, canopy carving) and the
+// headless preview renderer live in @voxolith/gen-kit, beside the generators.
 
 export type { Entity, EntityModel, MaterialHint, RGB, Role, Size, Vec3 } from "./entity";
 export { entityPalette, modelAt, modelIndex, roleHistogram, roleValue, voxelCount } from "./entity";
