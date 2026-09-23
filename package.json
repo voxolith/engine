@@ -27,6 +27,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./worker": "./src/worker/index.ts",
+    "./input": "./src/input/index.ts",
     "./vox": "./src/vox.ts"
   },
   "publishConfig": {
@@ -34,7 +35,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "verify": "bun tools/verify.ts"
+    "verify": "bun tools/verify.ts && bun tools/verify-input.ts"
   },
   "dependencies": {
     "@voxolith/renderer": "workspace:*"

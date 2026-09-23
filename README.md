@@ -35,9 +35,10 @@ and an entity can be restyled — season, faction, damage — without regenerati
 
 | import | contents |
 |---|---|
-| `@voxolith/engine` | entity and generator contracts, registry, palette allocation, placement |
+| `@voxolith/engine` | entity and generator contracts, registry, palette allocation, placement (runtime-safe: no DOM, no GPU) |
 | `@voxolith/engine/vox` | MagicaVoxel import and export |
 | `@voxolith/engine/worker` | off-thread generation pool |
+| `@voxolith/engine/input` | desktop and mobile input: pointers, keys, wheel, pointer lock, gamepad, gestures, actions, touch controls, orbit and look controllers (DOM only) |
 
 ## Authoring lives with the generators
 
@@ -47,6 +48,38 @@ host can build a model from a seed at runtime. It does not author them. The tool
 written with (dense volumes, rasterisers, noise, branch growth, canopy carving, rock masses) and
 the headless preview renderer are
 [`@voxolith/gen-kit`](https://github.com/voxolith/generators/tree/main/kit), in the generators repo.
+
+## Input
+
+One `createInput(el)` per surface owns every listener; everything else reads from it, so two
+controls can share a canvas and the whole lot disposes in one call. Layers, each built on the
+one before:
+
+- **`createInput`**: Pointer Events (mouse, pen, touch) with capture; keys by `code` with a
+  focus guard and release-on-blur; wheel normalised across `deltaMode`s, ctrl+wheel reported as a
+  trackpad pinch; pointer lock; the first gamepad (standard mapping, radial deadzone); a virtual
+  channel for on-screen controls. Pass `{ loop }` and every event invalidates it; render
+  continuously while `input.active()`.
+- **`recogniseGestures`**: tap, double-tap, long-press, drag, pinch. Tap versus drag is decided
+  on total travel, so a slow pan is never a click; a second finger turns a drag into a pinch.
+  Recognisers on one input take a `priority` and can `claim` a pointer.
+- **`makeActions`**: named buttons and axes over `key:`, `pad:` and `touch:` sources, so game
+  code asks for `jump`, not Space. Bindings round-trip as JSON for rebinding.
+- **`makeTouchControls`**: a floating joystick and buttons feeding `touch:` sources, shown once a
+  touch is seen and hidden on mouse, keyboard or gamepad. Themed by `--vx-control-bg`,
+  `--vx-control-fg` and `--vx-control-active`.
+- **`makeOrbitController`** (turntable, clamped room, RTS map) and **`makeLookController`**
+  (first person: pointer lock, drag on touch, right stick, turn keys). Their state is what
+  `makeCamera` and `firstPersonFrame` take.
+
+```ts
+import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
+
+prepareSurface(canvas); // no browser pan/zoom, selection or tap flash over it
+const input = createInput(canvas, { loop });
+const orbit = makeOrbitController(input, { distance: 200, distanceLimits: [40, 600], pan: "secondary" });
+// in the frame: camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch())
+```
 
 ## Development
 
