@@ -135,6 +135,10 @@ export function bakePose(model: EntityModel, rig: Rig, matrices: Float32Array, o
   const ox = x1 - x0 + 1, oy = y1 - y0 + 1, oz = z1 - z0 + 1, oxy = ox * oy;
   const data = new Uint8Array(ox * oy * oz);
   const outBones = new Uint8Array(ox * oy * oz);
+  // Every cell written, so the later passes visit only the model, not the
+  // (mostly empty) posed box.
+  const written = new Int32Array(Math.max(16, model.data.length));
+  let nWritten = 0;
   // Which rest voxel each posed cell came from (+1), for the cover pass.
   const cover = opts.cover ?? (rig.cover ? Uint8Array.from(rig.cover) : undefined);
   const src = cover ? new Int32Array(ox * oy * oz) : null;
@@ -146,12 +150,32 @@ export function bakePose(model: EntityModel, rig: Rig, matrices: Float32Array, o
     const i00 = inv[m], i01 = inv[m + 1], i02 = inv[m + 2], i03 = inv[m + 3];
     const i10 = inv[m + 4], i11 = inv[m + 5], i12 = inv[m + 6], i13 = inv[m + 7];
     const i20 = inv[m + 8], i21 = inv[m + 9], i22 = inv[m + 10], i23 = inv[m + 11];
+    // Rest-space box of this bone's voxels (half-open), to clip each row.
+    const rx0 = box[o], ry0 = box[o + 1], rz0 = box[o + 2], rx1 = box[o + 3] + 1, ry1 = box[o + 4] + 1, rz1 = box[o + 5] + 1;
     for (let z = pbox[o + 2]; z <= pbox[o + 5]; z++)
       for (let y = pbox[o + 1]; y <= pbox[o + 4]; y++) {
         const cy = y + 0.5, cz = z + 0.5;
         const by = i01 * cy + i02 * cz + i03, bgy = i11 * cy + i12 * cz + i13, bz = i21 * cy + i22 * cz + i23;
-        let di = (pbox[o] - x0) + (y - y0) * ox + (z - z0) * oxy;
-        for (let x = pbox[o]; x <= pbox[o + 3]; x++, di++) {
+        // Along the row the rest position is linear in x: solve for the x span
+        // that lands inside the bone's rest box instead of visiting every cell.
+        let xa = pbox[o] + 0.5, xb = pbox[o + 3] + 0.5;
+        const clip = (base: number, slope: number, lo: number, hi: number) => {
+          if (Math.abs(slope) < 1e-9) {
+            if (base < lo || base >= hi) { xa = 1; xb = 0; }
+            return;
+          }
+          let t0 = (lo - base) / slope, t1 = (hi - base) / slope;
+          if (t0 > t1) { const t = t0; t0 = t1; t1 = t; }
+          if (t0 > xa) xa = t0;
+          if (t1 < xb) xb = t1;
+        };
+        clip(by, i00, rx0, rx1);
+        clip(bgy, i10, ry0, ry1);
+        clip(bz, i20, rz0, rz1);
+        if (xa > xb) continue;
+        const xs = Math.max(pbox[o], Math.floor(xa - 0.5)), xe = Math.min(pbox[o + 3], Math.ceil(xb - 0.5));
+        let di = (xs - x0) + (y - y0) * ox + (z - z0) * oxy;
+        for (let x = xs; x <= xe; x++, di++) {
           const cx = x + 0.5;
           const rx = Math.floor(i00 * cx + by), ry = Math.floor(i10 * cx + bgy), rz = Math.floor(i20 * cx + bz);
           if (rx < 0 || ry < 0 || rz < 0 || rx >= sx || ry >= sy || rz >= sz) continue;
@@ -161,40 +185,53 @@ export function bakePose(model: EntityModel, rig: Rig, matrices: Float32Array, o
           data[di] = v;
           outBones[di] = b;
           if (src) src[di] = ri + 1;
+          if (nWritten < written.length) written[nWritten++] = di;
         }
       }
   }
 
+  const solid6 = (i: number) =>
+    (data[i - 1] ? 1 : 0) + (data[i + 1] ? 1 : 0) + (data[i - ox] ? 1 : 0) + (data[i + ox] ? 1 : 0) + (data[i - oxy] ? 1 : 0) + (data[i + oxy] ? 1 : 0);
+  const firstSolid = (i: number) =>
+    data[i - 1] ? i - 1 : data[i + 1] ? i + 1 : data[i - ox] ? i - ox : data[i + ox] ? i + ox : data[i - oxy] ? i - oxy : i + oxy;
+
   if (opts.fill !== false) {
     // Close cracks: an empty cell boxed in by solid on at least 5 sides takes
-    // a neighbour's value. One pass, reading the unfilled state.
-    const snap = data.slice();
-    for (let z = 1; z < oz - 1; z++)
-      for (let y = 1; y < oy - 1; y++)
-        for (let x = 1; x < ox - 1; x++) {
-          const i = x + y * ox + z * oxy;
-          if (snap[i]) continue;
-          let solid = 0, pick = -1;
-          for (const j of [i - 1, i + 1, i - ox, i + ox, i - oxy, i + oxy]) {
-            if (snap[j]) { solid++; if (pick < 0) pick = j; }
-          }
-          if (solid >= 5) { data[i] = snap[pick]; outBones[i] = outBones[pick]; }
-        }
+    // a neighbour's value. Candidates are the empty neighbours of written
+    // cells; decisions are made first and applied after, so fills do not feed
+    // each other. (The padding keeps every neighbour in range.)
+    const fills: number[] = [];
+    const seen = new Uint8Array(data.length);
+    const nb = [1, -1, ox, -ox, oxy, -oxy];
+    for (let k = 0; k < nWritten; k++) {
+      const w = written[k];
+      for (let q = 0; q < 6; q++) {
+        const i = w + nb[q];
+        if (data[i] || seen[i]) continue;
+        seen[i] = 1;
+        const x = i % ox, y = ((i / ox) | 0) % oy, z = (i / oxy) | 0;
+        if (x < 1 || y < 1 || z < 1 || x >= ox - 1 || y >= oy - 1 || z >= oz - 1) continue;
+        if (solid6(i) >= 5) fills.push(i, firstSolid(i));
+      }
+    }
+    for (let k = 0; k < fills.length; k += 2) {
+      data[fills[k]] = data[fills[k + 1]];
+      outBones[fills[k]] = outBones[fills[k + 1]];
+      // Filled cells have no rest voxel, so the cover pass treats them as newly exposed.
+      if (nWritten < written.length) written[nWritten++] = fills[k];
+    }
   }
 
   if (cover && src) {
     const surf = restSurface(model);
-    for (let z = 1; z < oz - 1; z++)
-      for (let y = 1; y < oy - 1; y++)
-        for (let x = 1; x < ox - 1; x++) {
-          const i = x + y * ox + z * oxy;
-          const v = data[i];
-          if (!v || !cover[v]) continue;
-          const r0 = src[i];
-          if (r0 && surf[r0 - 1]) continue; // already outside at rest: a wound, or a detail
-          if (data[i - 1] && data[i + 1] && data[i - ox] && data[i + ox] && data[i - oxy] && data[i + oxy]) continue;
-          data[i] = cover[v];
-        }
+    for (let k = 0; k < nWritten; k++) {
+      const i = written[k];
+      const v = data[i];
+      if (!v || !cover[v]) continue;
+      if (src[i] && surf[src[i] - 1]) continue; // already outside at rest: a wound, or a detail
+      if (solid6(i) === 6) continue;
+      data[i] = cover[v];
+    }
   }
 
   return {

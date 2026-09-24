@@ -38,6 +38,7 @@ and an entity can be restyled — season, faction, damage — without regenerati
 | `@voxolith/engine` | entity and generator contracts, registry, palette allocation, placement (runtime-safe: no DOM, no GPU) |
 | `@voxolith/engine/vox` | MagicaVoxel import and export |
 | `@voxolith/engine/worker` | off-thread generation pool |
+| `@voxolith/engine/animation` | rigs and clips: play (`makeAnimator`), pose, bake posed models, damage (`wound`, `sever`), pose cache, crowds |
 | `@voxolith/engine/atmosphere` | time of day and weather as configuration: `timeOfDay`, `Atmosphere` presets, blending and transitions, `atmosphereFrame` into the renderer's settings |
 | `@voxolith/engine/input` | desktop and mobile input: pointers, keys, wheel, pointer lock, gamepad, gestures, actions, touch controls, orbit and look controllers (DOM only) |
 
@@ -81,6 +82,42 @@ const input = createInput(canvas, { loop });
 const orbit = makeOrbitController(input, { distance: 200, distanceLimits: [40, 600], pan: "secondary" });
 // in the frame: camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch())
 ```
+
+## Animation
+
+Rigged entities (optional on the contract) carry `model.bones` (a bone per voxel), `rig` and
+`clips` (quaternion tracks per bone at 12 fps, a root offset, events such as footfalls).
+`@voxolith/engine/animation` is headless and pure:
+
+- `makeAnimator(entity)` plays clips with crossfades and reports events; `poseMatrices` turns a
+  pose into one rigid matrix per bone.
+- `bakePose(model, rig, matrices, { yaw })` produces the posed voxel model by **inverse mapping**
+  (every cell of a bone's posed box is taken back to rest space), so rotated limbs stay solid at
+  any angle; a crack pass closes joints, and `rig.cover` draws flesh a pose uncovers as fur.
+  About 0.6 ms for the 3.5k-voxel rat.
+- `wound` carves the rest model to expose its inside; `sever` cuts a bone's subtree off as its own
+  model and sub-rig, for a game to throw.
+- `makePoseCache`, and `makeCrowd`, which poses, caches and stamps many members on a budget: full
+  rate near the camera, stepped like sprite animation beyond `near`, frozen beyond `freeze`, a
+  millisecond budget for new bakes.
+
+Movers reach the world through `makeBrickStamper` (main barrel): per brick it keeps exactly the
+cells it overwrote and restores them inside the same edit that writes the movers' new positions,
+so things move through a streamed world with no dense copy; `Renderer.editMany` uploads a
+frame's bricks in one go.
+
+Measured headless (`bun run --cwd generators/creature bench`: CPU per frame for the crowd update
+and brick edits, not the upload or the draw), rats wandering a 512x512 field at 60 Hz:
+
+| rats | ms/frame | bakes/frame | bricks/frame | upload KB/frame |
+|---|---|---|---|---|
+| 10 | 0.4 | 0.1 | 52 | 15 |
+| 100 | 2.8 | 0.6 | 515 | 145 |
+| 500 | 15.5 | 1.0 | 2347 | 660 |
+| 1000 | 37.9 | 1.2 | 4293 | 1207 |
+
+Past a few hundred, brick re-encoding dominates. The next step is a dynamic entity layer on the
+GPU (instances with their own transform), which removes both the re-encode and the upload.
 
 ## Atmosphere
 

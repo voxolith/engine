@@ -9,6 +9,8 @@
 export interface PoseCache<T> {
   /** The cached value for `key`, made (and counted as a miss) if absent. */
   get(key: string, make: () => T): T;
+  /** The cached value if present (counted as a hit), without making one. */
+  peek(key: string): T | undefined;
   /** Drop everything whose key starts with `prefix` (e.g. one damaged creature). */
   drop(prefix: string): void;
   stats(): { entries: number; bytes: number; hits: number; misses: number };
@@ -40,6 +42,14 @@ export function makePoseCache<T>(sizeOf: (value: T) => number, opts: { maxBytes?
         bytes -= e.bytes;
       }
       return v;
+    },
+    peek(key) {
+      const hit = map.get(key);
+      if (!hit) return undefined;
+      map.delete(key);
+      map.set(key, hit);
+      hits++;
+      return hit.v;
     },
     drop(prefix) {
       for (const [k, e] of map) if (k.startsWith(prefix)) { map.delete(k); bytes -= e.bytes; }
