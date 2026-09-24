@@ -28,6 +28,7 @@
     ".": "./src/index.ts",
     "./worker": "./src/worker/index.ts",
     "./input": "./src/input/index.ts",
+    "./atmosphere": "./src/atmosphere/index.ts",
     "./vox": "./src/vox.ts"
   },
   "publishConfig": {
@@ -35,7 +36,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "verify": "bun tools/verify.ts && bun tools/verify-input.ts"
+    "verify": "bun tools/verify.ts && bun tools/verify-input.ts && bun tools/verify-atmosphere.ts"
   },
   "dependencies": {
     "@voxolith/renderer": "workspace:*"

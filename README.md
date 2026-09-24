@@ -38,6 +38,7 @@ and an entity can be restyled — season, faction, damage — without regenerati
 | `@voxolith/engine` | entity and generator contracts, registry, palette allocation, placement (runtime-safe: no DOM, no GPU) |
 | `@voxolith/engine/vox` | MagicaVoxel import and export |
 | `@voxolith/engine/worker` | off-thread generation pool |
+| `@voxolith/engine/atmosphere` | time of day and weather as configuration: `timeOfDay`, `Atmosphere` presets, blending and transitions, `atmosphereFrame` into the renderer's settings |
 | `@voxolith/engine/input` | desktop and mobile input: pointers, keys, wheel, pointer lock, gamepad, gestures, actions, touch controls, orbit and look controllers (DOM only) |
 
 ## Authoring lives with the generators
@@ -79,6 +80,29 @@ prepareSurface(canvas); // no browser pan/zoom, selection or tap flash over it
 const input = createInput(canvas, { loop });
 const orbit = makeOrbitController(input, { distance: 200, distanceLimits: [40, 600], pan: "secondary" });
 // in the frame: camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch())
+```
+
+## Atmosphere
+
+The renderer draws raw atmospheric effects and knows nothing about weather; a game decides
+whether there is weather and when it changes. `@voxolith/engine/atmosphere` sits between, with
+no simulation and no clock of its own:
+
+- `timeOfDay(phase)`: the lighting half of `FrameParams` for a time of day (0 midnight, 0.5 noon).
+  By day the key light follows the sun; at night it becomes a dim blue moonlight.
+- `Atmosphere`: cloud, precipitation (none, rain or snow, and intensity), wind, fog, and the
+  ground's `wetness` and snow `cover`. `ATMOSPHERES` has presets (`clear`, `cloudy`, `overcast`,
+  `rain`, `storm`, `snow`, `blizzard`, `fog`).
+- `blendAtmosphere`, `makeAtmosphereTransition` (eased, from wherever it is now), and `approach`
+  for a game's own accumulators: rain soaking the ground, snow settling, things drying.
+- `atmosphereFrame(lighting, atmosphere)`: the renderer's settings. Overcast dims and flattens the
+  key light and greys the sky, fog takes the horizon's colour, wind tilts the rain and drives the
+  clouds and the water. Clear weather passes the lighting through unchanged.
+
+```ts
+import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
+
+renderer.render({ ...camera, ...atmosphereFrame(timeOfDay(0.5), { ...ATMOSPHERES.rain, wetness: 0.7 }), time });
 ```
 
 ## Development
