@@ -11,7 +11,7 @@
 // toolkit (volumes, rasterisers, noise, branch growth, canopy carving) and the
 // headless preview renderer live in @voxolith/gen-kit, beside the generators.
 
-export type { Entity, EntityModel, MaterialHint, RGB, Role, Size, Vec3 } from "./entity";
+export type { Bone, Clip, ClipEvent, ClipTrack, Entity, EntityModel, MaterialHint, RGB, Rig, Role, Size, Vec3 } from "./entity";
 export { entityPalette, modelAt, modelIndex, roleHistogram, roleValue, voxelCount } from "./entity";
 
 export { entityMaterials } from "./palette";

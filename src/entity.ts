@@ -67,6 +67,53 @@ export interface EntityModel {
    */
   anchor: Vec3;
   roles: Role[];
+  /**
+   * Rigged models only: which bone owns each voxel (index into `Entity.rig.bones`),
+   * same indexing as `data`. Meaningless where `data` is 0.
+   */
+  bones?: Uint8Array;
+}
+
+/**
+ * One bone of a rig, in the rest pose, in model voxel space. A bone rotates
+ * about its `head`; `tail` is where its children usually start.
+ */
+export interface Bone {
+  id: string;
+  /** Index of the parent bone, or -1 for the root. Parents come before children. */
+  parent: number;
+  head: Vec3;
+  tail: Vec3;
+}
+
+export interface Rig {
+  bones: Bone[];
+}
+
+/** Keyframed rotations for one bone. Rotations are unit quaternions (x, y, z, w), relative to rest. */
+export interface ClipTrack {
+  bone: number;
+  /** Seconds, ascending, starting at 0. */
+  times: number[];
+  /** Four numbers per key. */
+  rotations: number[];
+}
+
+/** A named moment in a clip: a footfall, a bite. For sound, dust, gameplay. */
+export interface ClipEvent {
+  t: number;
+  name: string;
+}
+
+export interface Clip {
+  id: string;
+  /** Seconds. */
+  duration: number;
+  loop: boolean;
+  tracks: ClipTrack[];
+  /** Offset of the root in voxels over time (a bob, a crouch): times + 3 numbers per key. */
+  root?: { times: number[]; offsets: number[] };
+  events?: ClipEvent[];
 }
 
 export interface Entity {
@@ -77,6 +124,10 @@ export interface Entity {
   model: EntityModel;
   /** Generator parameters, seed, species, timings — free-form provenance. */
   meta: Record<string, unknown>;
+  /** Rigged entities: the skeleton `model.bones` refers to. */
+  rig?: Rig;
+  /** Rigged entities: the animations that come with it. */
+  clips?: Clip[];
 }
 
 export const modelIndex = (size: Size, x: number, y: number, z: number): number =>
