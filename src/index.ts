@@ -24,6 +24,8 @@ export { makeChunkedWorld } from "./chunks";
 export type { ScatterOptions, ScatterPoint } from "./scatter";
 export { scatterRegion } from "./scatter";
 export type { BrickTarget } from "./sink";
+export { makeBrickStamper, toSprite } from "./dynamic";
+export type { BrickStamper, MultiBrickTarget, Sprite, StampStats } from "./dynamic";
 export { blitModelToBricks } from "./sink";
 export type { Variant, VariantPool, VariantPoolOptions } from "./variants";
 export { makeVariantPool } from "./variants";

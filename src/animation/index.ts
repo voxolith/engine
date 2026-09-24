@@ -14,6 +14,8 @@ export type { Pose } from "./pose";
 export { makeAnimator } from "./animator";
 export type { Animator } from "./animator";
 export { sever, subtree, wound } from "./damage";
+export { makePoseCache } from "./cache";
+export type { PoseCache } from "./cache";
 export type { Severed, WoundOptions } from "./damage";
 export { IDENTITY_Q, invertRigid, mulAffine, quatAxisAngle, quatMul, quatToMat, transformPoint } from "./math";
 export type { Quat } from "./math";
