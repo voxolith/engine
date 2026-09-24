@@ -22,7 +22,12 @@ export interface Size {
 
 /** Optional shading, mirroring the renderer's per-slot material block. */
 export interface MaterialHint {
-  kind: "diffuse" | "metal" | "glass" | "emit";
+  /**
+   * "water" is a transparent, animated surface: the renderer ripples its top
+   * faces over time, reflects the sky, and shows the bed through it, fading
+   * with depth by `att`.
+   */
+  kind: "diffuse" | "metal" | "glass" | "emit" | "water";
   /** 0 = mirror-smooth, 1 = fully rough. */
   rough?: number;
   /** Metalness 0..1 (kind "metal"). */
@@ -31,9 +36,9 @@ export interface MaterialHint {
   emit?: number;
   /** Index of refraction offset (kind "glass"). */
   ior?: number;
-  /** Opacity 0..1 (kind "glass"); 0 is clear. */
+  /** Opacity 0..1 (kinds "glass" and "water"); 0 is clear. */
   alpha?: number;
-  /** Attenuation through glass. */
+  /** Attenuation through glass; for water, how fast the bed fades with depth (per voxel). */
   att?: number;
   /** Specular strength. */
   spec?: number;

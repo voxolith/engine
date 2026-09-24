@@ -9,7 +9,7 @@
 import type { Entity, EntityModel, MaterialHint, RGB, Role } from "./entity";
 import { orientAnchor, orientVoxel, type Orientation } from "./orient";
 
-const MATERIAL_KIND = { diffuse: 0, metal: 1, glass: 2, emit: 3 } as const;
+const MATERIAL_KIND = { diffuse: 0, metal: 1, glass: 2, emit: 3, water: 4 } as const;
 
 export interface Allocation {
   /** Voxel value of the entity's first role. */
@@ -119,7 +119,7 @@ function writeMaterial(m: Float32Array, slot: number, h: MaterialHint): void {
   m[o + 2] = h.kind === "metal" ? (h.metal ?? 1) : 0;
   m[o + 3] = h.kind === "emit" ? Math.max(1, h.emit ?? 1) : 0;
   m[o + 4] = h.ior ?? 0.3;
-  m[o + 5] = h.kind === "glass" ? (h.alpha ?? 0.25) : 1;
+  m[o + 5] = h.kind === "glass" || h.kind === "water" ? (h.alpha ?? 0.25) : 1;
   m[o + 6] = h.att ?? 0;
   m[o + 7] = h.spec ?? 0;
 }
