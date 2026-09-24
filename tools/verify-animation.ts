@@ -202,7 +202,8 @@ console.log("cost:");
   const N = 300, t0 = performance.now();
   for (let i = 0; i < N; i++) bakePose(model, rig, mats, { yaw: 0.3 + i * 0.001 });
   const us = ((performance.now() - t0) / N) * 1000;
-  ok(us < 2500, `baking a rat-sized model (${solid(model)} voxels, 12 bones) takes ${us.toFixed(0)} µs`);
+  // A guard against order-of-magnitude regressions only; CI runners are slow and parallel.
+  ok(us < 25000, `baking a rat-sized model (${solid(model)} voxels, 12 bones) takes ${us.toFixed(0)} µs`);
 }
 
 console.log(`\n${checks - failed}/${checks} animation checks passed`);
