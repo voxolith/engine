@@ -136,6 +136,33 @@ console.log("damage:");
   ok(!!cut.piece && cut.piece.origin[1] === 20, "and remembers where it was attached");
 }
 
+console.log("cover:");
+{
+  const { model, rig } = rod();
+  // Exposed role-2 (inside) voxels on the posed surface, excluding the rod's
+  // two end caps, which are outside at rest anyway.
+  const exposedInside = (m: EntityModel) => {
+    const { x: sx, y: sy } = m.size, sxy = sx * sy;
+    let n = 0;
+    for (let i = 0; i < m.data.length; i++) {
+      if (m.data[i] !== 2) continue;
+      const nbrs = [i - 1, i + 1, i - sx, i + sx, i - sxy, i + sxy];
+      if (nbrs.some((j) => j < 0 || j >= m.data.length || !m.data[j])) n++;
+    }
+    return n;
+  };
+  const pose = restPose(2);
+  pose.rotations.set(quatAxisAngle([0, 0, 1], (70 * Math.PI) / 180), 4);
+  const mats = poseMatrices(rig, pose);
+  const bare = bakePose(model, rig, mats);
+  const covered = bakePose(model, { ...rig, cover: [0, 0, 1] }, mats);
+  ok(exposedInside(covered) < exposedInside(bare), `a bend no longer shows the inside at the joint (${exposedInside(bare)} -> ${exposedInside(covered)} exposed voxels)`);
+  ok(exposedInside(covered) <= 2 * 9, "only the rod's own end caps show their inside");
+  const hurt = wound(model, [2.5, 10, 0], 2.5);
+  const shown = bakePose(hurt, { ...rig, cover: [0, 0, 1] }, poseMatrices(rig, restPose(2)));
+  ok(exposedInside(shown) > exposedInside(bakePose(model, { ...rig, cover: [0, 0, 1] }, poseMatrices(rig, restPose(2)))), "but a wound still shows what is inside");
+}
+
 console.log("animator:");
 {
   const { model, rig } = rod();

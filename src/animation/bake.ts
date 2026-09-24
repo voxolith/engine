@@ -21,6 +21,15 @@ export interface BakeOptions {
   yaw?: number;
   /** Close joint cracks (default true). */
   fill?: boolean;
+  /**
+   * Cover for voxels a pose exposes. When a limb swings, voxels that were
+   * buried at rest (flesh under a haunch) end up on the surface; with a table
+   * mapping role value → surface role (a generator's interior → fur), those
+   * are drawn with the cover instead. Voxels already on the rest surface —
+   * including wounds carved into the rest model — are left alone, so damage
+   * still shows its inside. Defaults to `rig.cover`.
+   */
+  cover?: Uint8Array;
 }
 
 interface BoneBounds {
@@ -30,6 +39,25 @@ interface BoneBounds {
 }
 
 const boundsCache = new WeakMap<EntityModel, BoneBounds>();
+const surfaceCache = new WeakMap<EntityModel, Uint8Array>();
+
+/** 1 where a rest voxel touches air. */
+function restSurface(model: EntityModel): Uint8Array {
+  let s = surfaceCache.get(model);
+  if (s) return s;
+  const { x: sx, y: sy, z: sz } = model.size;
+  const sxy = sx * sy, d = model.data;
+  s = new Uint8Array(d.length);
+  for (let z = 0, i = 0; z < sz; z++)
+    for (let y = 0; y < sy; y++)
+      for (let x = 0; x < sx; x++, i++) {
+        if (!d[i]) continue;
+        if (x === 0 || y === 0 || z === 0 || x === sx - 1 || y === sy - 1 || z === sz - 1 ||
+          !d[i - 1] || !d[i + 1] || !d[i - sx] || !d[i + sx] || !d[i - sxy] || !d[i + sxy]) s[i] = 1;
+      }
+  surfaceCache.set(model, s);
+  return s;
+}
 
 function boneBounds(model: EntityModel, boneCount: number): BoneBounds {
   let b = boundsCache.get(model);
@@ -107,6 +135,9 @@ export function bakePose(model: EntityModel, rig: Rig, matrices: Float32Array, o
   const ox = x1 - x0 + 1, oy = y1 - y0 + 1, oz = z1 - z0 + 1, oxy = ox * oy;
   const data = new Uint8Array(ox * oy * oz);
   const outBones = new Uint8Array(ox * oy * oz);
+  // Which rest voxel each posed cell came from (+1), for the cover pass.
+  const cover = opts.cover ?? (rig.cover ? Uint8Array.from(rig.cover) : undefined);
+  const src = cover ? new Int32Array(ox * oy * oz) : null;
   const rest = model.data, restBones = model.bones;
 
   for (let b = 0; b < n; b++) {
@@ -129,6 +160,7 @@ export function bakePose(model: EntityModel, rig: Rig, matrices: Float32Array, o
           if (!v || restBones[ri] !== b || data[di]) continue;
           data[di] = v;
           outBones[di] = b;
+          if (src) src[di] = ri + 1;
         }
       }
   }
@@ -147,6 +179,21 @@ export function bakePose(model: EntityModel, rig: Rig, matrices: Float32Array, o
             if (snap[j]) { solid++; if (pick < 0) pick = j; }
           }
           if (solid >= 5) { data[i] = snap[pick]; outBones[i] = outBones[pick]; }
+        }
+  }
+
+  if (cover && src) {
+    const surf = restSurface(model);
+    for (let z = 1; z < oz - 1; z++)
+      for (let y = 1; y < oy - 1; y++)
+        for (let x = 1; x < ox - 1; x++) {
+          const i = x + y * ox + z * oxy;
+          const v = data[i];
+          if (!v || !cover[v]) continue;
+          const r0 = src[i];
+          if (r0 && surf[r0 - 1]) continue; // already outside at rest: a wound, or a detail
+          if (data[i - 1] && data[i + 1] && data[i - ox] && data[i + ox] && data[i - oxy] && data[i + oxy]) continue;
+          data[i] = cover[v];
         }
   }
 

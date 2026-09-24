@@ -88,6 +88,11 @@ export interface Bone {
 
 export interface Rig {
   bones: Bone[];
+  /**
+   * Role value → role to draw instead when a pose exposes a voxel that was
+   * buried at rest (interior → fur). 0 or missing means "leave it".
+   */
+  cover?: number[];
 }
 
 /** Keyframed rotations for one bone. Rotations are unit quaternions (x, y, z, w), relative to rest. */
