@@ -21,6 +21,8 @@ export interface BakeOptions {
   yaw?: number;
   /** Close joint cracks (default true). */
   fill?: boolean;
+  /** Weld each posed joint so a child bone cannot come off its parent (default true). */
+  weld?: boolean;
   /**
    * Cover for voxels a pose exposes. When a limb swings, voxels that were
    * buried at rest (flesh under a haunch) end up on the surface; with a table
@@ -188,6 +190,90 @@ export function bakePose(model: EntityModel, rig: Rig, matrices: Float32Array, o
           if (nWritten < written.length) written[nWritten++] = di;
         }
       }
+  }
+
+  if (opts.weld !== false) {
+    // Weld joints. Each bone samples only its own rest voxels, so where a
+    // child turns against its parent the two can end up touching at an edge
+    // or a corner only, and a thin limb comes off. Around each posed joint,
+    // fill the empty cells of a 3x3x3 block from the rest model through
+    // either bone's inverse, taking voxels of either bone. The rest model
+    // decides what is solid, so a weld never adds bulk the body did not have.
+    const jp: Vec3 = [0, 0, 0], rp: Vec3 = [0, 0, 0];
+    for (let b = 0; b < n; b++) {
+      const par = rig.bones[b].parent;
+      if (par < 0 || !counts[b] || !counts[par]) continue;
+      const h = rig.bones[b].head;
+      transformPoint(world, b * 12, h[0], h[1], h[2], jp);
+      const jx = Math.floor(jp[0]), jy = Math.floor(jp[1]), jz = Math.floor(jp[2]);
+      for (let dz = -1; dz <= 1; dz++)
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            const x = jx + dx, y = jy + dy, z = jz + dz;
+            if (x <= x0 || y <= y0 || z <= z0 || x >= x1 || y >= y1 || z >= z1) continue;
+            const di = (x - x0) + (y - y0) * ox + (z - z0) * oxy;
+            if (data[di]) continue;
+            for (const via of [b, par]) {
+              transformPoint(inv, via * 12, x + 0.5, y + 0.5, z + 0.5, rp);
+              const rx = Math.floor(rp[0]), ry = Math.floor(rp[1]), rz = Math.floor(rp[2]);
+              if (rx < 0 || ry < 0 || rz < 0 || rx >= sx || ry >= sy || rz >= sz) continue;
+              const ri = rx + ry * sx + rz * sxy;
+              const v = rest[ri];
+              if (!v || (restBones[ri] !== b && restBones[ri] !== par)) continue;
+              data[di] = v;
+              outBones[di] = restBones[ri];
+              if (src) src[di] = ri + 1;
+              if (nWritten < written.length) written[nWritten++] = di;
+              break;
+            }
+          }
+    }
+  }
+
+  if (opts.weld !== false) {
+    // Bridge diagonal-only contacts. Resampling a one- or two-voxel limb at an
+    // angle leaves neighbours touching along an edge or at a corner, which a
+    // renderer draws as a gap and a flood fill counts as two pieces. Where two
+    // cells of the same bone (or a bone and its parent) meet only diagonally,
+    // fill one cell between them, as gen-kit's line3 does when authoring. The
+    // candidates come from the cells written so far, so the pass stays small.
+    const par = Int32Array.from(rig.bones, (b) => b.parent);
+    // The 20 non-face neighbours as (dx, dy, dz) triples.
+    const diag: number[] = [];
+    for (let dz = -1; dz <= 1; dz++)
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) if ((dx ? 1 : 0) + (dy ? 1 : 0) + (dz ? 1 : 0) >= 2) diag.push(dx, dy, dz);
+    const put = (q: number, v: number, bone: number) => {
+      data[q] = v;
+      outBones[q] = bone;
+      if (nWritten < written.length) written[nWritten++] = q;
+    };
+    const end = nWritten;
+    for (let k = 0; k < end; k++) {
+      const i = written[k];
+      const bi = outBones[i], v = data[i];
+      const x = i % ox, y = ((i / ox) | 0) % oy, z = (i / oxy) | 0;
+      if (x < 1 || y < 1 || z < 1 || x >= ox - 1 || y >= oy - 1 || z >= oz - 1) continue;
+      for (let d = 0; d < diag.length; d += 3) {
+        const dx = diag[d], dy = diag[d + 1] * ox, dz = diag[d + 2] * oxy;
+        const j = i + dx + dy + dz;
+        const bj = outBones[j];
+        if (!data[j] || (bj !== bi && par[bj] !== bi && par[bi] !== bj)) continue;
+        if (!dx || !dy || !dz) {
+          // Edge: joined when either shared face neighbour is solid.
+          const s1 = dx ? i + dx : i + dy, s2 = dz ? i + dz : i + dy;
+          if (data[s1] || data[s2]) continue;
+          put(s1, v, bi);
+          continue;
+        }
+        // Corner: joined when some face path i → a → b → j is solid.
+        if ((data[i + dx] && (data[i + dx + dy] || data[i + dx + dz])) ||
+          (data[i + dy] && (data[i + dy + dx] || data[i + dy + dz])) ||
+          (data[i + dz] && (data[i + dz + dx] || data[i + dz + dy]))) continue;
+        if (!data[i + dx]) put(i + dx, v, bi);
+        if (!data[i + dx + dy]) put(i + dx + dy, v, bi);
+      }
+    }
   }
 
   const solid6 = (i: number) =>
