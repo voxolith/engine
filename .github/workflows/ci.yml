@@ -30,3 +30,4 @@ jobs:
           JSON
       - run: bun install
       - run: bun run --cwd engine typecheck
+      - run: bun run --cwd engine verify
