@@ -26,5 +26,5 @@ export type WorkerRequest = GenerateRequest;
 export type WorkerResponse =
   /** Sent once when the worker has registered its generators and can serve. */
   | { kind: "ready"; generators: string[] }
-  | { kind: "ok"; id: number; entity: Entity }
+  | { kind: "ok"; id: number; entity: Entity; /** Loaded from the model cache rather than generated. */ cached?: boolean }
   | { kind: "error"; id: number; message: string };

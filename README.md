@@ -70,7 +70,10 @@ tint?)` makes one per key (a species, or a single placement with tinted roles), 
 recolours it in place; `instancePalette(roles)` builds the data for `Renderer.addPalette`. `makeCrowd({ instances })` places
 a crowd that way: one pose model per variant, clip and frame (no heading buckets), members at
 their exact position and yaw, nothing written into the world. The generator worker pool passes
-`ctx` through and hands sparse bricks back without copying.
+`ctx` through and hands sparse bricks back without copying. `serveGenerators({ cache: "name" })`
+keeps generated models in IndexedDB, deflated, keyed by generator, version, seed, parameters and
+context and salted with the worker's own URL (a production build hashes it), so the next visit
+loads them; the pool's `cached` counts the hits.
 
 ## Input
 

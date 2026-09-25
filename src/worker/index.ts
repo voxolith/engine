@@ -13,4 +13,7 @@
 export { makeGeneratorPool } from "./pool";
 export type { GeneratorPool, GeneratorPoolOptions, GenerateSpec } from "./pool";
 export { serveGenerators } from "./serve";
+export type { ServeOptions } from "./serve";
+export { openModelCache, packEntity, unpackEntity } from "./cache";
+export type { ModelCache } from "./cache";
 export type { GenerateRequest, WorkerRequest, WorkerResponse } from "./protocol";

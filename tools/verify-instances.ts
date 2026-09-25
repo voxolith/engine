@@ -5,6 +5,7 @@ import { makeInstanceLayer, orientationYaw, type InstancePlacement, type Instanc
 import { blitModel } from "../src/palette";
 import type { Orientation } from "../src/orient";
 import { makeAnimator, makeCrowd, type CrowdMember } from "../src/animation";
+import { packEntity, unpackEntity } from "../src/worker/cache";
 
 let failed = 0, checks = 0;
 const ok = (c: boolean, m: string, d = "") => {
@@ -130,6 +131,20 @@ console.log("instances match stamped orientations:");
     worst = Math.max(worst, diff);
   }
   ok(worst === 0, "an instance turned by orientationYaw(o) covers exactly the voxels stamping with orientation o writes, for all 8", `${worst} cells differ`);
+}
+
+console.log("model cache packing:");
+{
+  const bricks = new Map<number, Uint8Array>();
+  for (let k = 0; k < 40; k++) { const b = new Uint8Array(512); b[k] = k + 1; b[511] = 7; bricks.set(k * 13, b); }
+  const e: Entity = { id: "t", kind: "tree", meta: { a: 1 }, model: { size: { x: 64, y: 64, z: 64 }, data: new Uint8Array(0), sparse: { size: { x: 64, y: 64, z: 64 }, bricks }, anchor: [3, 0, 4], roles: [{ id: "a", name: "a", color: [1, 0, 0] }] } };
+  const { head, bytes } = packEntity(e);
+  const back = unpackEntity(structuredClone(head), bytes.slice());
+  const same = back.model.sparse!.bricks.size === 40 && [...bricks].every(([k, b]) => { const o = back.model.sparse!.bricks.get(k); return !!o && o.every((v, i) => v === b[i]); });
+  ok(same && back.model.anchor[2] === 4 && back.meta.a === 1 && back.model.roles[0].id === "a", "a sparse model packs and unpacks to the same bricks, anchor, roles and meta");
+  const d: Entity = { id: "d", kind: "rat", meta: {}, model: { size: { x: 2, y: 2, z: 2 }, data: Uint8Array.from([1, 0, 2, 0, 3, 0, 4, 5]), bones: Uint8Array.from([0, 0, 1, 0, 1, 0, 2, 2]), anchor: [1, 0, 1], roles: [] } };
+  const p2 = packEntity(d), d2 = unpackEntity(p2.head, p2.bytes);
+  ok(d2.model.data.join() === "1,0,2,0,3,0,4,5" && d2.model.bones!.join() === "0,0,1,0,1,0,2,2" && !d2.model.sparse, "  a dense rigged model keeps its data and bones");
 }
 
 console.log(`\n${checks - failed}/${checks} instance checks passed`);

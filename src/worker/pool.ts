@@ -51,6 +51,8 @@ export interface GeneratorPool {
   readonly size: number;
   /** Requests issued but not yet resolved. */
   readonly pending: number;
+  /** Results that came from a worker's model cache (see serveGenerators' `cache`). */
+  readonly cached: number;
 }
 
 interface Slot {
@@ -71,6 +73,7 @@ export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
   const inflight = new Map<number, { resolve: (e: Entity) => void; reject: (e: Error) => void; slot: Slot }>();
   let nextId = 1;
   let destroyed = false;
+  let cachedCount = 0;
 
   const slots: Slot[] = Array.from({ length: size }, () => {
     const worker = opts.spawn();
@@ -86,7 +89,10 @@ export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
         if (!entry) return;
         inflight.delete(msg.id);
         entry.slot.busy = false;
-        if (msg.kind === "ok") entry.resolve(msg.entity);
+        if (msg.kind === "ok") {
+          if (msg.cached) cachedCount++;
+          entry.resolve(msg.entity);
+        }
         else entry.reject(new Error(msg.message));
         drain();
       };
@@ -131,6 +137,9 @@ export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
     size,
     get pending() {
       return waiting.length + inflight.size;
+    },
+    get cached() {
+      return cachedCount;
     },
     ready: async () => {
       await Promise.all(slots.map((s) => s.ready));
