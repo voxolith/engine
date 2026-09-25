@@ -19,12 +19,22 @@ export interface Allocation {
 
 export class PaletteAllocator {
   private next: number;
-  private readonly slots: (Role | null)[] = new Array(256).fill(null);
+  private readonly capacity: number;
+  private readonly slots: (Role | null)[];
   private readonly byKey = new Map<string, Allocation>();
 
-  /** Slot 0 is empty; reserve low slots for a host's own colours if wanted. */
-  constructor(firstSlot = 1) {
+  /**
+   * Slot 0 is empty; reserve low slots for a host's own colours if wanted.
+   *
+   * `slots` (default 256) can be raised to the renderer's PALETTE_SLOTS
+   * (1024) for scenes of instanced models: instances map roles to any slot,
+   * while world voxels are 8-bit and must stay below 256. Allocate what goes
+   * into the world (terrain, stamped entities) first, so it gets low slots.
+   */
+  constructor(firstSlot = 1, opts: { slots?: number } = {}) {
     this.next = Math.max(1, firstSlot);
+    this.capacity = Math.max(256, opts.slots ?? 256);
+    this.slots = new Array(this.capacity).fill(null);
   }
 
   get used(): number {
@@ -32,7 +42,7 @@ export class PaletteAllocator {
   }
 
   get free(): number {
-    return 256 - this.next;
+    return this.capacity - this.next;
   }
 
   /**
@@ -44,7 +54,7 @@ export class PaletteAllocator {
       const hit = this.byKey.get(key);
       if (hit) return hit;
     }
-    if (this.next + roles.length > 256) {
+    if (this.next + roles.length > this.capacity) {
       throw new Error(`Palette exhausted: need ${roles.length} slots, ${this.free} left`);
     }
     const alloc: Allocation = { base: this.next, count: roles.length };
@@ -65,10 +75,10 @@ export class PaletteAllocator {
     if (role) this.slots[slot] = { ...role, color };
   }
 
-  /** 256 × RGBA floats for `RenderScene.palette`. */
+  /** One RGBA per slot (256, or the capacity asked for) for `RenderScene.palette`. */
   buildPalette(): Float32Array {
-    const p = new Float32Array(256 * 4);
-    for (let s = 1; s < 256; s++) {
+    const p = new Float32Array(this.capacity * 4);
+    for (let s = 1; s < this.capacity; s++) {
       const role = this.slots[s];
       if (!role) continue;
       p.set([role.color[0], role.color[1], role.color[2], 1], s * 4);
@@ -82,8 +92,8 @@ export class PaletteAllocator {
    */
   buildMaterials(): Float32Array | undefined {
     let any = false;
-    const m = new Float32Array(256 * 8);
-    for (let s = 1; s < 256; s++) {
+    const m = new Float32Array(this.capacity * 8);
+    for (let s = 1; s < this.capacity; s++) {
       const hint = this.slots[s]?.material;
       if (!hint) continue;
       any = true;
