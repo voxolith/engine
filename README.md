@@ -64,7 +64,10 @@ everything else must still be one grounded piece.
 Large models are drawn by reference, not stamped: `makeInstanceLayer(renderer)` uploads each
 model once (`models.id(model)`), keeps static placements (scenery, sent once) apart from moving
 ones (sent every commit), and `orientationYaw(o)` turns an axis-aligned `Orientation` into the
-instance `{ yaw, mirror }` that draws exactly the same voxels. `makeCrowd({ instances })` places
+instance `{ yaw, mirror }` that draws exactly the same voxels. Instances take their colours from
+palettes of their own rather than from the world's 256 slots: `layer.palettes.of(key, roles,
+tint?)` makes one per key (a species, or a single placement with tinted roles), `restyle`
+recolours it in place; `instancePalette(roles)` builds the data for `Renderer.addPalette`. `makeCrowd({ instances })` places
 a crowd that way: one pose model per variant, clip and frame (no heading buckets), members at
 their exact position and yaw, nothing written into the world. The generator worker pool passes
 `ctx` through and hands sparse bricks back without copying.

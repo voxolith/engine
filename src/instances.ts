@@ -11,13 +11,18 @@
 // (by identity) and `makeInstanceLayer` keeps the static placements (scenery)
 // apart from the moving ones (a crowd), sending both in one list.
 
-import type { EntityModel, Vec3 } from "./entity";
+import type { EntityModel, RGB, Role, Vec3 } from "./entity";
+import { instancePalette } from "./palette";
 import type { SparseVoxels } from "@voxolith/renderer/core";
 
 /** What a renderer offers for instancing; `Renderer` implements it. */
 export interface InstanceTarget {
   addModel(src: { size: { x: number; y: number; z: number }; data?: Uint8Array; sparse?: SparseVoxels }): number;
   removeModel(id: number): void;
+  /** A palette of its own for instances; returns its base slot. */
+  addPalette(colors: Float32Array, materials?: Float32Array): number;
+  setPaletteColors(base: number, colors: Float32Array, materials?: Float32Array): void;
+  removePalette(base: number, entries: number): void;
   /** Replace the static set, or with `dynamic` only the moving one (cheap per frame). */
   setInstances(list: readonly InstancePlacement[], opts?: { dynamic?: boolean }): void;
 }
@@ -90,9 +95,58 @@ export interface EntityPlacement {
   base: number;
 }
 
+/**
+ * Palettes for instances, by key: a species shares one, a placement that
+ * should look different gets its own. No slot budget: they live after the
+ * world's 256 on the renderer.
+ */
+export interface PaletteLibrary {
+  /** The base slot of the palette for `key`, made from `roles` (and `tint`) the first time. */
+  of(key: string, roles: readonly Role[], tint?: (color: RGB, role: Role, index: number) => RGB): number;
+  /** Recolour the palette for `key` in place: every instance using it changes. */
+  restyle(key: string, roles: readonly Role[], tint?: (color: RGB, role: Role, index: number) => RGB): void;
+  release(key: string): void;
+  /** Palettes held, and their slots. */
+  readonly size: number;
+  readonly slots: number;
+}
+
+export function makePaletteLibrary(target: InstanceTarget): PaletteLibrary {
+  const byKey = new Map<string, { base: number; n: number }>();
+  let slots = 0;
+  return {
+    of(key, roles, tint) {
+      let p = byKey.get(key);
+      if (!p) {
+        const { colors, materials } = instancePalette(roles, tint);
+        p = { base: target.addPalette(colors, materials), n: roles.length };
+        byKey.set(key, p);
+        slots += p.n;
+      }
+      return p.base;
+    },
+    restyle(key, roles, tint) {
+      const p = byKey.get(key);
+      if (!p) return;
+      const { colors, materials } = instancePalette(roles, tint);
+      target.setPaletteColors(p.base, colors, materials);
+    },
+    release(key) {
+      const p = byKey.get(key);
+      if (!p) return;
+      target.removePalette(p.base, p.n);
+      byKey.delete(key);
+      slots -= p.n;
+    },
+    get size() { return byKey.size; },
+    get slots() { return slots; },
+  };
+}
+
 export interface InstanceLayer {
   readonly target: InstanceTarget;
   readonly models: ModelLibrary;
+  readonly palettes: PaletteLibrary;
   /** Replace the static placements (scenery); the model's own anchor is used. */
   setStatic(list: readonly EntityPlacement[]): void;
   /** Replace the moving placements (a crowd's, every frame). */
@@ -105,12 +159,14 @@ export interface InstanceLayer {
 
 export function makeInstanceLayer(target: InstanceTarget): InstanceLayer {
   const models = makeModelLibrary(target);
+  const palettes = makePaletteLibrary(target);
   let fixed: InstancePlacement[] = [];
   let moving: readonly InstancePlacement[] = [];
   let fixedDirty = true;
   return {
     target,
     models,
+    palettes,
     setStatic(list) {
       fixed = list.map((p) => ({ model: models.id(p.model), x: p.x, y: p.y, z: p.z, anchor: p.model.anchor, yaw: p.yaw ?? 0, mirror: p.mirror, base: p.base }));
       fixedDirty = true;

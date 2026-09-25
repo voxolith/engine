@@ -19,12 +19,17 @@ function mockTarget() {
   let next = 0, adds = 0, removes = 0;
   let fixed: readonly InstancePlacement[] = [], moving: readonly InstancePlacement[] = [];
   let staticSends = 0;
+  let paletteEnd = 256;
+  const palettes = new Map<number, Float32Array>();
   const t: InstanceTarget = {
+    addPalette: (colors) => { const b = paletteEnd; paletteEnd += colors.length / 4; palettes.set(b, colors); return b; },
+    setPaletteColors: (base, colors) => { palettes.set(base, colors); },
+    removePalette: (base) => { palettes.delete(base); },
     addModel: () => { adds++; live.add(next); return next++; },
     removeModel: (id) => { removes++; live.delete(id); },
     setInstances: (list, o) => { if (o?.dynamic) moving = list; else { fixed = list; staticSends++; } },
   };
-  return { t, live, stats: () => ({ adds, removes, last: [...fixed, ...moving], staticSends }) };
+  return { t, live, palettes, stats: () => ({ adds, removes, last: [...fixed, ...moving], staticSends }) };
 }
 
 const box = (sx: number, sy: number, sz: number, v = 1): EntityModel => ({
@@ -45,6 +50,22 @@ console.log("instance layer:");
   layer.commit();
   ok(m.stats().last.length === 51 && layer.count() === 51, "  moving placements are sent after the static ones");
   ok(m.stats().staticSends === 1, "  scenery is sent once, not every commit");
+}
+
+console.log("instance palettes:");
+{
+  const m = mockTarget();
+  const layer = makeInstanceLayer(m.t);
+  const roles = [{ id: "wall", name: "", color: [0.8, 0.7, 0.6] as [number, number, number] }, { id: "roof", name: "", color: [0.5, 0.2, 0.1] as [number, number, number] }];
+  // Forty species of 32 roles: far past a 256-slot palette, no budget here.
+  const bases = Array.from({ length: 40 }, (_, i) => layer.palettes.of(`species${i}`, Array.from({ length: 32 }, () => roles[0])));
+  ok(bases.every((b) => b >= 256) && new Set(bases).size === 40 && layer.palettes.slots === 1280, "forty 32-role palettes live after the world's 256 slots, 1280 slots in all");
+  ok(layer.palettes.of("species3", roles) === bases[3], "  the same key gives the same palette");
+  const own = layer.palettes.of("house:7", roles, (c) => [c[0] * 0.9, c[1], c[2] * 1.1]);
+  const col = m.palettes.get(own)!;
+  ok(Math.abs(col[0] - 0.72) < 1e-6 && Math.abs(col[2] - 0.66) < 1e-6, "  one placement gets its own tinted palette");
+  layer.palettes.restyle("house:7", roles, () => [0, 0, 1]);
+  ok(m.palettes.get(own)![2] === 1, "  and can be restyled in place");
 }
 
 console.log("a crowd drawn by instances:");

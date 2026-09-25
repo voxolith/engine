@@ -24,16 +24,14 @@ export class PaletteAllocator {
   private readonly byKey = new Map<string, Allocation>();
 
   /**
-   * Slot 0 is empty; reserve low slots for a host's own colours if wanted.
-   *
-   * `slots` (default 256) can be raised to the renderer's PALETTE_SLOTS
-   * (1024) for scenes of instanced models: instances map roles to any slot,
-   * while world voxels are 8-bit and must stay below 256. Allocate what goes
-   * into the world (terrain, stamped entities) first, so it gets low slots.
+   * The world's palette: 256 slots, since world voxels are 8-bit. Slot 0 is
+   * empty; reserve low slots for a host's own colours if wanted. Instanced
+   * models do not need slots here: they get palettes of their own
+   * (instancePalette, Renderer.addPalette).
    */
-  constructor(firstSlot = 1, opts: { slots?: number } = {}) {
+  constructor(firstSlot = 1) {
     this.next = Math.max(1, firstSlot);
-    this.capacity = Math.max(256, opts.slots ?? 256);
+    this.capacity = 256;
     this.slots = new Array(this.capacity).fill(null);
   }
 
@@ -75,7 +73,7 @@ export class PaletteAllocator {
     if (role) this.slots[slot] = { ...role, color };
   }
 
-  /** One RGBA per slot (256, or the capacity asked for) for `RenderScene.palette`. */
+  /** 256 × RGBA floats for `RenderScene.palette`. */
   buildPalette(): Float32Array {
     const p = new Float32Array(this.capacity * 4);
     for (let s = 1; s < this.capacity; s++) {
@@ -120,6 +118,23 @@ export function entityMaterials(model: EntityModel, slotMin = 1): Float32Array |
     writeMaterial(m, s, hint);
   }
   return any ? m : undefined;
+}
+
+/**
+ * A palette of its own for a set of roles, as Renderer.addPalette takes it:
+ * RGBA per role (role r at entry r - 1) and, when any role has a material
+ * hint, 8 floats per role. `tint` adjusts colours (a restyled placement).
+ */
+export function instancePalette(roles: readonly Role[], tint?: (color: RGB, role: Role, index: number) => RGB): { colors: Float32Array; materials?: Float32Array } {
+  const colors = new Float32Array(roles.length * 4);
+  const mats = new Float32Array(roles.length * 8);
+  let any = false;
+  roles.forEach((r, i) => {
+    const c = tint ? tint(r.color, r, i) : r.color;
+    colors.set([c[0], c[1], c[2], 1], i * 4);
+    if (r.material) { any = true; writeMaterial(mats, i, r.material); }
+  });
+  return { colors, materials: any ? mats : undefined };
 }
 
 function writeMaterial(m: Float32Array, slot: number, h: MaterialHint): void {
