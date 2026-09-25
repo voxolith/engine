@@ -11,6 +11,9 @@
 // lets a host restyle an entity (season, faction, damage) without regenerating
 // it. The convention follows the decor models in the Catagochi game.
 
+import { sparseCount, sparseGet, type SparseVoxels } from "@voxolith/renderer/core";
+
+export type { SparseVoxels };
 export type Vec3 = [number, number, number];
 /** Linear RGB in 0..1, matching the renderer's palette. */
 export type RGB = [number, number, number];
@@ -58,8 +61,16 @@ export interface Role {
 export interface EntityModel {
   /** Tight bounding box of the occupied voxels, Y-up (y is height). */
   size: Size;
-  /** Dense role indices; 0 is empty. Index with `modelIndex`. */
+  /**
+   * Dense role indices; 0 is empty. Index with `modelIndex`. Empty (length 0)
+   * when the model is `sparse`; read either form through `modelAt`.
+   */
   data: Uint8Array;
+  /**
+   * The same voxels as 8^3 bricks, for models too large to hold densely (a
+   * refined 1 cm-voxel tree). Present instead of `data`, never with it.
+   */
+  sparse?: SparseVoxels;
   /**
    * Where the entity's origin sits inside the box, in voxels. A tree puts this
    * at the trunk base centre with y = 0, so placing it means aligning the
@@ -139,13 +150,20 @@ export const modelIndex = (size: Size, x: number, y: number, z: number): number 
   x + y * size.x + z * size.x * size.y;
 
 export function modelAt(model: EntityModel, x: number, y: number, z: number): number {
+  if (model.sparse) return sparseGet(model.sparse, x, y, z);
   const { x: sx, y: sy, z: sz } = model.size;
   if (x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz) return 0;
   return model.data[x + y * sx + z * sx * sy];
 }
 
+/** True for a model stored as bricks (`sparse`) rather than dense `data`. */
+export function isSparse(model: EntityModel): boolean {
+  return !!model.sparse;
+}
+
 /** Number of non-empty voxels. */
 export function voxelCount(model: EntityModel): number {
+  if (model.sparse) return sparseCount(model.sparse);
   let n = 0;
   for (let i = 0; i < model.data.length; i++) if (model.data[i] !== 0) n++;
   return n;
@@ -154,6 +172,10 @@ export function voxelCount(model: EntityModel): number {
 /** Voxels per role index (1-based; element 0 is the empty count). */
 export function roleHistogram(model: EntityModel): number[] {
   const h = new Array<number>(model.roles.length + 1).fill(0);
+  if (model.sparse) {
+    for (const b of model.sparse.bricks.values()) for (let i = 0; i < 512; i++) if (b[i] && b[i] < h.length) h[b[i]]++;
+    return h;
+  }
   for (let i = 0; i < model.data.length; i++) {
     const v = model.data[i];
     if (v < h.length) h[v]++;

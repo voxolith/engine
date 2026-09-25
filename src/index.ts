@@ -11,8 +11,8 @@
 // toolkit (volumes, rasterisers, noise, branch growth, canopy carving) and the
 // headless preview renderer live in @voxolith/gen-kit, beside the generators.
 
-export type { Bone, Clip, ClipEvent, ClipTrack, Entity, EntityModel, MaterialHint, RGB, Rig, Role, Size, Vec3 } from "./entity";
-export { entityPalette, modelAt, modelIndex, roleHistogram, roleValue, voxelCount } from "./entity";
+export type { Bone, Clip, ClipEvent, ClipTrack, Entity, EntityModel, MaterialHint, RGB, Rig, Role, Size, SparseVoxels, Vec3 } from "./entity";
+export { entityPalette, isSparse, modelAt, modelIndex, roleHistogram, roleValue, voxelCount } from "./entity";
 
 export { entityMaterials } from "./palette";
 export type { Orientation } from "./orient";
@@ -25,13 +25,17 @@ export type { ScatterOptions, ScatterPoint } from "./scatter";
 export { scatterRegion } from "./scatter";
 export type { BrickTarget } from "./sink";
 export { makeBrickStamper, toSprite } from "./dynamic";
+export { makeInstanceLayer, makeModelLibrary } from "./instances";
+export type { EntityPlacement, InstanceLayer, InstancePlacement, InstanceTarget, ModelLibrary } from "./instances";
 export type { BrickStamper, MultiBrickTarget, Sprite, StampStats } from "./dynamic";
 export { blitModelToBricks } from "./sink";
 export type { Variant, VariantPool, VariantPoolOptions } from "./variants";
 export { makeVariantPool } from "./variants";
 
-export type { EntityGenerator, ParamSpec } from "./generator";
+export type { EntityGenerator, GenerateContext, ParamSpec } from "./generator";
 export {
+  DEFAULT_VOXELS_PER_METRE,
+  refinement,
   clearGenerators,
   getGenerator,
   getParam,

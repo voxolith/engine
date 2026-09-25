@@ -17,8 +17,9 @@ export interface PoseCache<T> {
   resetStats(): void;
 }
 
-export function makePoseCache<T>(sizeOf: (value: T) => number, opts: { maxBytes?: number } = {}): PoseCache<T> {
+export function makePoseCache<T>(sizeOf: (value: T) => number, opts: { maxBytes?: number; /** Called for each value evicted or dropped (free what it holds). */ onEvict?: (key: string, value: T) => void } = {}): PoseCache<T> {
   const max = opts.maxBytes ?? 48 * 1024 * 1024;
+  const evict = opts.onEvict;
   const map = new Map<string, { v: T; bytes: number }>();
   let bytes = 0, hits = 0, misses = 0;
   return {
@@ -40,6 +41,7 @@ export function makePoseCache<T>(sizeOf: (value: T) => number, opts: { maxBytes?
         if (bytes <= max || k === key) break;
         map.delete(k);
         bytes -= e.bytes;
+        evict?.(k, e.v);
       }
       return v;
     },
@@ -52,7 +54,7 @@ export function makePoseCache<T>(sizeOf: (value: T) => number, opts: { maxBytes?
       return hit.v;
     },
     drop(prefix) {
-      for (const [k, e] of map) if (k.startsWith(prefix)) { map.delete(k); bytes -= e.bytes; }
+      for (const [k, e] of map) if (k.startsWith(prefix)) { map.delete(k); bytes -= e.bytes; evict?.(k, e.v); }
     },
     stats: () => ({ entries: map.size, bytes, hits, misses }),
     resetStats() { hits = 0; misses = 0; },

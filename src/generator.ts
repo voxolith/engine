@@ -26,7 +26,40 @@ export interface EntityGenerator<P> {
   roles: Role[];
   defaults: P;
   params: ParamSpec[];
-  generate(params: P, rng: () => number): Entity;
+  /**
+   * `ctx` is optional and every field of it has a default, so a call without
+   * it gives exactly the model it always did.
+   */
+  generate(params: P, rng: () => number, ctx?: GenerateContext): Entity;
+  /**
+   * Voxel scales this generator supports beyond its native one (default
+   * DEFAULT_VOXELS_PER_METRE), e.g. [100]. Absent: native only.
+   */
+  scales?: number[];
+}
+
+/**
+ * The world an entity is generated for.
+ *
+ * Parameters stay in the generator's native voxels (10 per metre unless it
+ * says otherwise), so share codes and existing models are unaffected; a finer
+ * world asks for the same design at more voxels per metre, and the generator
+ * decides how to add the detail (see gen-kit `refine`).
+ */
+export interface GenerateContext {
+  /** Default DEFAULT_VOXELS_PER_METRE. */
+  voxelsPerMetre?: number;
+}
+
+/** The scale every generator's parameters are written in. */
+export const DEFAULT_VOXELS_PER_METRE = 10;
+
+/**
+ * Whole-number refinement factor for a context: how many fine voxels per
+ * native one along each axis (1 at the native scale).
+ */
+export function refinement(ctx?: GenerateContext, native = DEFAULT_VOXELS_PER_METRE): number {
+  return Math.max(1, Math.round((ctx?.voxelsPerMetre ?? native) / native));
 }
 
 const registry = new Map<string, EntityGenerator<never>>();

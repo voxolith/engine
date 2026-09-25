@@ -8,8 +8,9 @@
 // frame keeps last frame's pose), and hands the result to the stamper, which
 // only touches bricks whose members actually changed.
 
-import type { Entity, EntityModel, Rig } from "../entity";
+import type { Entity, EntityModel, Rig, Vec3 } from "../entity";
 import { toSprite, type BrickStamper, type Sprite, type StampStats } from "../dynamic";
+import type { InstanceLayer, InstancePlacement } from "../instances";
 import { bakePose } from "./bake";
 import type { PoseCache } from "./cache";
 import { makePoseCache } from "./cache";
@@ -37,7 +38,15 @@ export interface CrowdMember {
 }
 
 export interface CrowdOptions {
-  stamper: BrickStamper;
+  /** Stamp members into the world's bricks. One of `stamper` or `instances`. */
+  stamper?: BrickStamper;
+  /**
+   * Draw members as instances instead: each pose is uploaded once as a model
+   * (no heading buckets: the instance turns it) and members move and turn
+   * smoothly, with nothing written into the world. Needs a renderer with
+   * instancing; the layer's `commit` is called at the end of each update.
+   */
+  instances?: InstanceLayer;
   cache?: PoseCache<BakedPose>;
   /** Clip sampling rate near the camera. Default 12. */
   fps?: number;
@@ -67,7 +76,10 @@ export interface CrowdOptions {
 export interface BakedPose {
   /** Only with `keepModels`. */
   model?: EntityModel;
-  sprite: Sprite;
+  /** Stamping only. */
+  sprite?: Sprite;
+  /** Instances only: the pose's model id and anchor. */
+  instance?: { id: number; anchor: Vec3 };
   matrices: Float32Array;
   yaw: number;
 }
@@ -93,7 +105,15 @@ export function makeCrowd(opts: CrowdOptions): Crowd {
   const near = opts.near ?? 120, farFps = opts.farFps ?? 6, freeze = opts.freeze ?? 400;
   const budget = opts.budgetMs ?? 4;
   const keepModels = opts.keepModels === true;
-  const cache = opts.cache ?? makePoseCache<BakedPose>((v) => (v.model ? v.model.data.length * 2 : 0) + v.sprite.cells.length * 5 + 64, { maxBytes: 96 * 1024 * 1024 });
+  const layer = opts.instances;
+  if (!layer && !opts.stamper) throw new Error("makeCrowd needs a stamper or an instance layer");
+  // Evicted poses free their GPU model once no member shows them any more.
+  const retired: number[] = [];
+  const cache = opts.cache ?? makePoseCache<BakedPose>(
+    (v) => (v.model ? v.model.data.length * 2 : 0) + (v.sprite ? v.sprite.cells.length * 5 : 0) + (v.instance ? 4096 : 0) + 64,
+    { maxBytes: 96 * 1024 * 1024, onEvict: (_k, v) => { if (v.instance) retired.push(v.instance.id); } },
+  );
+
   const lastPose = new Map<number, BakedPose>();
   const lastKey = new Map<number, string>();
   const stepFar = opts.stepFar !== false;
@@ -103,7 +123,7 @@ export function makeCrowd(opts: CrowdOptions): Crowd {
     cache,
     last: (id) => lastPose.get(id),
     remove(id) {
-      opts.stamper.remove(id);
+      opts.stamper?.remove(id);
       lastPose.delete(id);
       lastKey.delete(id);
       frozen.delete(id);
@@ -111,6 +131,7 @@ export function makeCrowd(opts: CrowdOptions): Crowd {
     update(members, cam) {
       const t0 = performance.now();
       let bakes = 0, deferred = 0, hits = 0;
+      const placed: InstancePlacement[] = [];
       for (const m of members) {
         const d = Math.hypot(m.x - cam[0], m.y - cam[1], m.z - cam[2]);
         const rig = m.entity.rig as Rig;
@@ -123,10 +144,11 @@ export function makeCrowd(opts: CrowdOptions): Crowd {
           frame = Math.floor(m.anim.time() * rate) * Math.round(fps / rate);
           frozen.set(m.id, frame);
         }
-        const hb = ((Math.round((m.yaw / (Math.PI * 2)) * headings) % headings) + headings) % headings;
+        // Instances turn for free, so their poses are not bucketed by heading.
+        const hb = layer ? 0 : ((Math.round((m.yaw / (Math.PI * 2)) * headings) % headings) + headings) % headings;
         const key = `${m.variant}.${m.damage ?? 0}|${clip}|${frame}|${hb}`;
         // Far away and still on the same pose frame: leave it where it is.
-        if (stepFar && d > near && lastKey.get(m.id) === key) continue;
+        if (!layer && stepFar && d > near && lastKey.get(m.id) === key) continue;
         lastKey.set(m.id, key);
         let pose: BakedPose | undefined;
         const before = cache.stats().misses;
@@ -146,6 +168,7 @@ export function makeCrowd(opts: CrowdOptions): Crowd {
             const matrices = poseMatrices(rig, sampleClip(c, frame / fps, rig.bones.length));
             const yaw = (hb / headings) * Math.PI * 2;
             const model = bakePose(m.rest ?? m.entity.model, rig, matrices, { yaw });
+            if (layer) return { model: keepModels ? model : undefined, instance: { id: layer.target.addModel({ size: model.size, data: model.data }), anchor: model.anchor }, matrices, yaw };
             return { model: keepModels ? model : undefined, sprite: toSprite(model), matrices, yaw };
           });
           if (cache.stats().misses > before) bakes++;
@@ -153,9 +176,24 @@ export function makeCrowd(opts: CrowdOptions): Crowd {
         }
         if (!pose) continue;
         lastPose.set(m.id, pose);
-        opts.stamper.put(m.id, pose.sprite, { x: m.x, y: m.y, z: m.z }, m.base);
+        if (pose.instance) placed.push({ model: pose.instance.id, x: m.x, y: m.y, z: m.z, anchor: pose.instance.anchor, yaw: m.yaw, base: m.base });
+        else if (pose.sprite) opts.stamper!.put(m.id, pose.sprite, { x: m.x, y: m.y, z: m.z }, m.base);
       }
-      const st = opts.stamper.commit();
+      if (layer) {
+        layer.setDynamic(placed);
+        layer.commit();
+        // Free evicted poses nobody is showing now.
+        if (retired.length) {
+          const shown = new Set(placed.map((p) => p.model));
+          for (let i = retired.length - 1; i >= 0; i--) {
+            if (shown.has(retired[i])) continue;
+            layer.target.removeModel(retired[i]);
+            retired.splice(i, 1);
+          }
+        }
+        return { bricks: 0, voxels: 0, movers: placed.length, members: members.length, bakes, deferred, hits };
+      }
+      const st = opts.stamper!.commit();
       return { ...st, members: members.length, bakes, deferred, hits };
     },
   };
