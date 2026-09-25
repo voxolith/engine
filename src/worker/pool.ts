@@ -9,6 +9,7 @@
 // also parallelises across cores rather than merely moving sideways.
 
 import type { Entity } from "../entity";
+import type { GenerateContext } from "../generator";
 import type { GenerateRequest, WorkerResponse } from "./protocol";
 
 export interface GeneratorPoolOptions {
@@ -31,6 +32,8 @@ export interface GenerateSpec {
   params: unknown;
   seed: number;
   entityId?: string;
+  /** Passed to the generator, e.g. { voxelsPerMetre: 100 }. */
+  ctx?: GenerateContext;
 }
 
 export interface GeneratorPool {
@@ -118,6 +121,7 @@ export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
         params: job.spec.params,
         seed: job.spec.seed,
         entityId: job.spec.entityId,
+        ctx: job.spec.ctx,
       };
       slot.worker.postMessage(req);
     }

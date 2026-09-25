@@ -15,7 +15,7 @@
 // contract is exactly what a UI can show and a person can tweak; anything not
 // declared as a ParamSpec is part of the preset, not part of the shared state.
 
-import { getGenerator, getParam, withParam, type EntityGenerator, type ParamSpec } from "./generator";
+import { getGenerator, getParam, withParam, type EntityGenerator, type GenerateContext, type ParamSpec } from "./generator";
 import type { Entity } from "./entity";
 import { seededRandom } from "@voxolith/renderer/core";
 
@@ -266,10 +266,10 @@ export function decodeState<P = unknown>(code: string): GeneratorState<P> {
 }
 
 /** Build the model a state describes. Pure: same state, same voxels. */
-export function generateFromState<P>(state: GeneratorState<P>, id?: string): Entity {
+export function generateFromState<P>(state: GeneratorState<P>, id?: string, ctx?: GenerateContext): Entity {
   const gen = getGenerator<P>(state.generator);
   if (!gen) throw new Error(`Generator "${state.generator}" is not registered`);
-  const entity = gen.generate(state.params, seededRandom(state.seed || 1));
+  const entity = gen.generate(state.params, seededRandom(state.seed || 1), ctx);
   if (id) entity.id = id;
   return entity;
 }

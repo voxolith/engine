@@ -61,5 +61,14 @@ console.log("to the renderer:");
   ok(lum(atmosphereFrame(timeOfDay(0), ATMOSPHERES.overcast).skyTop) < 0.12, "an overcast night stays dark");
 }
 
+console.log("scale:");
+{
+  const a = atmosphereFrame(timeOfDay(0.5), ATMOSPHERES.rain);
+  const b = atmosphereFrame(timeOfDay(0.5), ATMOSPHERES.rain, { voxelsPerMetre: 100 });
+  ok(a.effectScale === undefined && b.effectScale === 10, "a 100 vox/m world asks for effects ten voxels to the native one");
+  ok(Math.abs((b.fog?.density ?? 0) * 10 - (a.fog?.density ?? 1)) < 1e-9 && Math.abs((b.precipitation?.fall[1] ?? 0) - (a.precipitation?.fall[1] ?? 0) * 10) < 1e-9,
+    "  fog per voxel thins and rain falls ten times the voxels per second: the same weather in metres");
+}
+
 console.log(`\n${checks - failed}/${checks} atmosphere checks passed`);
 if (failed) process.exit(1);

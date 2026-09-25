@@ -18,7 +18,8 @@ import type { SparseVoxels } from "@voxolith/renderer/core";
 export interface InstanceTarget {
   addModel(src: { size: { x: number; y: number; z: number }; data?: Uint8Array; sparse?: SparseVoxels }): number;
   removeModel(id: number): void;
-  setInstances(list: readonly InstancePlacement[]): void;
+  /** Replace the static set, or with `dynamic` only the moving one (cheap per frame). */
+  setInstances(list: readonly InstancePlacement[], opts?: { dynamic?: boolean }): void;
 }
 
 export interface InstancePlacement {
@@ -32,8 +33,18 @@ export interface InstancePlacement {
   anchor?: Vec3;
   /** Radians about +y, any angle. */
   yaw?: number;
+  /** Mirror along the model's x before turning (see `orientationYaw`). */
+  mirror?: boolean;
   /** Palette slot of role 1. */
   base: number;
+}
+
+/**
+ * The instance turn that draws what stamping with an axis-aligned
+ * orientation would: `{ yaw, mirror }` for Orientation `o`.
+ */
+export function orientationYaw(o: number): { yaw: number; mirror: boolean } {
+  return { yaw: -(o & 3) * (Math.PI / 2), mirror: (o & 4) !== 0 };
 }
 
 export interface ModelLibrary {
@@ -75,6 +86,7 @@ export interface EntityPlacement {
   y: number;
   z: number;
   yaw?: number;
+  mirror?: boolean;
   base: number;
 }
 
@@ -95,21 +107,25 @@ export function makeInstanceLayer(target: InstanceTarget): InstanceLayer {
   const models = makeModelLibrary(target);
   let fixed: InstancePlacement[] = [];
   let moving: readonly InstancePlacement[] = [];
-  let sent = 0;
+  let fixedDirty = true;
   return {
     target,
     models,
     setStatic(list) {
-      fixed = list.map((p) => ({ model: models.id(p.model), x: p.x, y: p.y, z: p.z, anchor: p.model.anchor, yaw: p.yaw ?? 0, base: p.base }));
+      fixed = list.map((p) => ({ model: models.id(p.model), x: p.x, y: p.y, z: p.z, anchor: p.model.anchor, yaw: p.yaw ?? 0, mirror: p.mirror, base: p.base }));
+      fixedDirty = true;
     },
     setDynamic(list) {
       moving = list;
     },
     commit() {
-      const all = moving.length ? fixed.concat(moving) : fixed;
-      target.setInstances(all);
-      sent = all.length;
+      // Scenery is sent once; the moving set every commit.
+      if (fixedDirty) {
+        target.setInstances(fixed);
+        fixedDirty = false;
+      }
+      target.setInstances(moving, { dynamic: true });
     },
-    count: () => sent,
+    count: () => fixed.length + moving.length,
   };
 }

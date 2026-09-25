@@ -125,6 +125,13 @@ export interface AtmosphereFrameOptions {
   rainSpeed?: number;
   /** Snow fall speed. Default 8. */
   snowSpeed?: number;
+  /**
+   * The world's scale (default 10, the scale everything above is tuned for).
+   * A finer world gets the same weather in metres: fog per voxel thins,
+   * rain and snow fall more voxels per second, and the renderer's
+   * `effectScale` keeps waves and drops their size.
+   */
+  voxelsPerMetre?: number;
 }
 
 /**
@@ -160,8 +167,10 @@ export function atmosphereFrame(lighting: Lighting, atm: Atmosphere, opts: Atmos
   const wx = Math.sin(w), wz = Math.cos(w);
   const ws = clamp01(atm.wind.strength);
 
+  const es = (opts.voxelsPerMetre ?? 10) / 10;
   const out: Lighting & AtmosphereParams = {
     ...lighting,
+    ...(es !== 1 ? { effectScale: es } : {}),
     lightColor,
     ambientSky,
     ambientGround,
@@ -176,16 +185,16 @@ export function atmosphereFrame(lighting: Lighting, atm: Atmosphere, opts: Atmos
   const fogAmount = clamp01(atm.fog) + precip * (atm.precipitation.kind === "snow" ? 0.35 : 0.2);
   if (fogAmount > 0) {
     out.fog = {
-      density: 0.0012 + fogAmount * fogAmount * 0.018,
+      density: (0.0012 + fogAmount * fogAmount * 0.018) / es,
       color: mix3(skyHorizon, cloudColor, 0.4),
-      heightFalloff: 0.004 + (1 - clamp01(atm.fog)) * 0.008,
+      heightFalloff: (0.004 + (1 - clamp01(atm.fog)) * 0.008) / es,
     };
   }
 
   if (precip > 0) {
     const snow = atm.precipitation.kind === "snow";
-    const speed = snow ? (opts.snowSpeed ?? 8) : (opts.rainSpeed ?? 70);
-    const side = ws * (snow ? 10 : 28);
+    const speed = (snow ? (opts.snowSpeed ?? 8) : (opts.rainSpeed ?? 70)) * es;
+    const side = ws * (snow ? 10 : 28) * es;
     // Particles are lit like the scene: mostly ambient, some key light.
     const lit = mix3(ambientSky, lightColor, 0.35);
     out.precipitation = {

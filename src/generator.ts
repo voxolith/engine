@@ -36,6 +36,12 @@ export interface EntityGenerator<P> {
    * DEFAULT_VOXELS_PER_METRE), e.g. [100]. Absent: native only.
    */
   scales?: number[];
+  /**
+   * Role ids that may come loose at finer scales: single leaves, petals,
+   * seed heads, snow on foliage. Everything else (the structure) must still
+   * be one grounded piece.
+   */
+  looseRoles?: string[];
 }
 
 /**

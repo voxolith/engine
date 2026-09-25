@@ -33,8 +33,14 @@ interface WorkerScope {
  * copied instead.
  */
 function transferables(entity: Entity): Transferable[] {
+  const out: Transferable[] = [];
+  const own = (a: Uint8Array) => a.byteOffset === 0 && a.byteLength === a.buffer.byteLength && a.byteLength > 0;
   const d = entity.model.data;
-  return d.byteOffset === 0 && d.byteLength === d.buffer.byteLength ? [d.buffer] : [];
+  if (own(d)) out.push(d.buffer);
+  // A sparse model is a map of 512-byte bricks; each is its own buffer.
+  if (entity.model.sparse) for (const b of entity.model.sparse.bricks.values()) if (own(b)) out.push(b.buffer);
+  if (entity.model.bones && own(entity.model.bones)) out.push(entity.model.bones.buffer);
+  return out;
 }
 
 /**
@@ -53,7 +59,7 @@ export function serveGenerators(scope: WorkerScope = self as unknown as WorkerSc
             `Registered: ${listGenerators().map((g) => g.id).join(", ") || "none"}`,
         );
       }
-      const entity = gen.generate(req.params as never, seededRandom(req.seed));
+      const entity = gen.generate(req.params as never, seededRandom(req.seed), req.ctx);
       if (req.entityId) entity.id = req.entityId;
       scope.postMessage({ kind: "ok", id: req.id, entity }, transferables(entity));
     } catch (err) {

@@ -25,7 +25,7 @@ export type { ScatterOptions, ScatterPoint } from "./scatter";
 export { scatterRegion } from "./scatter";
 export type { BrickTarget } from "./sink";
 export { makeBrickStamper, toSprite } from "./dynamic";
-export { makeInstanceLayer, makeModelLibrary } from "./instances";
+export { makeInstanceLayer, makeModelLibrary, orientationYaw } from "./instances";
 export type { EntityPlacement, InstanceLayer, InstancePlacement, InstanceTarget, ModelLibrary } from "./instances";
 export type { BrickStamper, MultiBrickTarget, Sprite, StampStats } from "./dynamic";
 export { blitModelToBricks } from "./sink";

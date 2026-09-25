@@ -51,6 +51,24 @@ written with (dense volumes, rasterisers, noise, branch growth, canopy carving, 
 the headless preview renderer are
 [`@voxolith/gen-kit`](https://github.com/voxolith/generators/tree/main/kit), in the generators repo.
 
+## Scale and instances
+
+Every generator's parameters are written in 10 voxels per metre. A finer world asks for the same
+design at more (`generate(params, rng, { voxelsPerMetre: 100 })`, `refinement(ctx)` gives the
+whole-number factor); generators that can say so in `scales` and refine their own models (see
+gen-kit `refine`). A model too large to hold densely comes back **sparse**: `EntityModel.sparse`
+(8³ bricks) in place of `data`, read through `modelAt`, `voxelCount`, `roleHistogram`.
+`looseRoles` names the roles that may come loose at a finer scale (single leaves, petals);
+everything else must still be one grounded piece.
+
+Large models are drawn by reference, not stamped: `makeInstanceLayer(renderer)` uploads each
+model once (`models.id(model)`), keeps static placements (scenery, sent once) apart from moving
+ones (sent every commit), and `orientationYaw(o)` turns an axis-aligned `Orientation` into the
+instance `{ yaw, mirror }` that draws exactly the same voxels. `makeCrowd({ instances })` places
+a crowd that way: one pose model per variant, clip and frame (no heading buckets), members at
+their exact position and yaw, nothing written into the world. The generator worker pool passes
+`ctx` through and hands sparse bricks back without copying.
+
 ## Input
 
 One `createInput(el)` per surface owns every listener; everything else reads from it, so two
@@ -120,6 +138,10 @@ Past a few hundred, brick re-encoding dominates. The next step is a dynamic enti
 GPU (instances with their own transform), which removes both the re-encode and the upload.
 
 ## Atmosphere
+
+`atmosphereFrame(lighting, atmosphere, { voxelsPerMetre })` gives the same weather in a finer
+world: fog per voxel thins, rain and snow fall more voxels per second, and the renderer's
+`effectScale` keeps waves and drops their size.
 
 The renderer draws raw atmospheric effects and knows nothing about weather; a game decides
 whether there is weather and when it changes. `@voxolith/engine/atmosphere` sits between, with

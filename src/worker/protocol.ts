@@ -4,6 +4,7 @@
 // side pulling in the pool, or vice versa.
 
 import type { Entity } from "../entity";
+import type { GenerateContext } from "../generator";
 
 export interface GenerateRequest {
   kind: "generate";
@@ -16,6 +17,8 @@ export interface GenerateRequest {
   seed: number;
   /** Optional id for the produced entity. */
   entityId?: string;
+  /** Passed to the generator (a finer voxelsPerMetre, ...). */
+  ctx?: GenerateContext;
 }
 
 export type WorkerRequest = GenerateRequest;
