@@ -2,6 +2,7 @@
 
 import type { Clip, Entity, EntityModel, Rig } from "../src/entity";
 import { makeInstanceLayer, orientationYaw, type InstancePlacement, type InstanceTarget } from "../src/instances";
+import { INST_WORDS, packInstance, sampleInstance as sampleCpu } from "@voxolith/renderer/core";
 import { blitModel } from "../src/palette";
 import type { Orientation } from "../src/orient";
 import { makeAnimator, makeCrowd, type CrowdMember } from "../src/animation";
@@ -100,17 +101,12 @@ console.log("a crowd drawn by instances:");
 
 console.log("instances match stamped orientations:");
 {
-  // The renderer's instance sampling (grid.wesl toModel/instanceVoxel), in TS.
+  // What the renderer draws: its own packing and the CPU twin of grid.wesl's sampling.
   const sampleInstance = (m: EntityModel, p: InstancePlacement, wx: number, wy: number, wz: number): number => {
-    const a0 = p.anchor ?? [m.size.x / 2, 0, m.size.z / 2];
-    const an = p.mirror ? [m.size.x - 1 - a0[0], a0[1], a0[2]] : a0;
-    const c = Math.cos(p.yaw ?? 0), s = Math.sin(p.yaw ?? 0);
-    const dx = wx + 0.5 - p.x - 0.5, dy = wy + 0.5 - p.y, dz = wz + 0.5 - p.z - 0.5;
-    let qx = Math.floor(c * dx - s * dz + an[0] + 0.5);
-    const qy = Math.floor(dy + an[1]), qz = Math.floor(s * dx + c * dz + an[2] + 0.5);
-    if (p.mirror) qx = m.size.x - 1 - qx;
-    if (qx < 0 || qy < 0 || qz < 0 || qx >= m.size.x || qy >= m.size.y || qz >= m.size.z) return 0;
-    const v = m.data[qx + qy * m.size.x + qz * m.size.x * m.size.y];
+    const words = new Uint32Array(INST_WORDS);
+    packInstance({ ...p, anchor: p.anchor }, { size: m.size }, 0, words, 0);
+    const sxy = m.size.x * m.size.y;
+    const v = sampleCpu(words, 0, undefined, { size: m.size, voxel: (x, y, z) => m.data[x + y * m.size.x + z * sxy], part: () => 0 }, wx, wy, wz);
     return v ? p.base + v - 1 : 0;
   };
   // An asymmetric model with a fractional-free anchor off centre.

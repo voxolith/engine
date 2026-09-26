@@ -14,8 +14,8 @@
  * @packageDocumentation
  */
 
-export { bakePose } from "./bake";
-export type { BakeOptions } from "./bake";
+export { bakePose, prepareRigged } from "./bake";
+export type { BakeOptions, RiggedModel } from "./bake";
 export { blendPoses, clipTime, poseMatrices, restPose, sampleClip } from "./pose";
 export type { Pose } from "./pose";
 export { makeAnimator } from "./animator";

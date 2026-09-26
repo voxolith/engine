@@ -17,7 +17,15 @@ import type { SparseVoxels } from "@voxolith/renderer/core";
 
 /** What a renderer offers for instancing; `Renderer` implements it. */
 export interface InstanceTarget {
-  addModel(src: { size: { x: number; y: number; z: number }; data?: Uint8Array; sparse?: SparseVoxels }): number;
+  addModel(src: {
+    size: { x: number; y: number; z: number };
+    data?: Uint8Array;
+    sparse?: SparseVoxels;
+    /** Part index per voxel (a rig's bones), for models drawn with per-part transforms. */
+    parts?: Uint8Array;
+    /** Per part, its parent (-1 for none) and the joint where it meets it. */
+    joints?: readonly { parent: number; at: readonly [number, number, number] }[];
+  }): number;
   removeModel(id: number): void;
   /** A palette of its own for instances; returns its base slot. */
   addPalette(colors: Float32Array, materials?: Float32Array): number;
@@ -39,6 +47,8 @@ export interface InstancePlacement {
   anchor?: Vec3;
   /** Radians about +y, any angle. */
   yaw?: number;
+  /** A full rotation instead of `yaw`: 3x3 row-major, world = R · model, about the anchor voxel's centre. */
+  rotation?: ArrayLike<number>;
   /** Mirror along the model's x before turning (see `orientationYaw`). */
   mirror?: boolean;
   /**
@@ -46,6 +56,12 @@ export interface InstancePlacement {
    * for instances coloured like stamped voxels.
    */
   base: number;
+  /**
+   * Per-part transforms (12 floats each, e.g. `poseMatrices` output) for a model uploaded with
+   * parts: the renderer poses it on the GPU from the shared rest model. See `makeCrowd`'s
+   * `rigged` option.
+   */
+  parts?: ArrayLike<number>;
 }
 
 /**
@@ -104,6 +120,8 @@ export interface EntityPlacement {
   z: number;
   /** Radians about +y, any angle. */
   yaw?: number;
+  /** A full rotation instead of `yaw` (3x3 row-major, world = R · model). */
+  rotation?: ArrayLike<number>;
   /** Mirror along the model's x before turning. */
   mirror?: boolean;
   /** Palette slot of role 1. */
@@ -217,7 +235,7 @@ export function makeInstanceLayer(target: InstanceTarget): InstanceLayer {
     models,
     palettes,
     setStatic(list) {
-      fixed = list.map((p) => ({ model: models.id(p.model), x: p.x, y: p.y, z: p.z, anchor: p.model.anchor, yaw: p.yaw ?? 0, mirror: p.mirror, base: p.base }));
+      fixed = list.map((p) => ({ model: models.id(p.model), x: p.x, y: p.y, z: p.z, anchor: p.model.anchor, yaw: p.yaw ?? 0, rotation: p.rotation, mirror: p.mirror, base: p.base }));
       fixedDirty = true;
     },
     setDynamic(list) {

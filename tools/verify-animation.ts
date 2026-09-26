@@ -5,6 +5,7 @@ import {
   bakePose,
   makeAnimator,
   poseMatrices,
+  prepareRigged,
   quatAxisAngle,
   restPose,
   sampleClip,
@@ -12,6 +13,7 @@ import {
   transformPoint,
   wound,
 } from "../src/animation/index";
+import { INST_WORDS, maxPartWords, packInstance, partBoxes, sampleInstance as sampleCpu } from "@voxolith/renderer/core";
 
 let failed = 0, checks = 0;
 const ok = (c: boolean, m: string, d = "") => {
@@ -178,6 +180,63 @@ console.log("animator:");
   ok(half > 0.01 && half < q[0] - 0.01, `a crossfade passes through the middle (${half.toFixed(3)} of ${q[0].toFixed(3)})`);
   const ev = [...first, ...anim.update(0.1), ...anim.update(1)];
   ok(ev.filter((e) => e.name === "step").length === 2, `events fire each time they are crossed, across loops (${ev.length})`);
+}
+
+console.log("posing on the GPU (renderer parts) matches baking:");
+{
+  // A 12-bone limb that bends in several directions, with varied roles, a fractional anchor
+  // aligned to the lattice as described below, drawn two ways: baked and placed as a plain
+  // instance, and as one instance with per-part transforms (what the renderer samples on the GPU).
+  const size = { x: 16, y: 16, z: 44 };
+  const data = new Uint8Array(size.x * size.y * size.z);
+  const bones = new Uint8Array(data.length);
+  for (let z = 0; z < size.z; z++) for (let y = 0; y < size.y; y++) for (let x = 0; x < size.x; x++) {
+    const r = 6 - z * 0.08, dx = x - 7.5, dy = y - 7.5;
+    if (dx * dx + dy * dy > r * r) continue;
+    const i = x + y * size.x + z * size.x * size.y;
+    data[i] = 1 + ((x + 2 * y + 3 * z) % 5);
+    bones[i] = Math.min(11, Math.floor(z / 3.6));
+  }
+  const rig: Rig = { bones: Array.from({ length: 12 }, (_, k) => ({ id: `b${k}`, parent: k - 1, head: [8, 8, k * 3.6] as [number, number, number], tail: [8, 8, (k + 1) * 3.6] as [number, number, number] })) };
+  const model: EntityModel = { size, data, bones, anchor: [8, 0, 22], roles: [1, 2, 3, 4, 5].map((r) => ({ id: `r${r}`, name: `r${r}`, color: [1, 1, 1] as [number, number, number] })) };
+  const rest = prepareRigged(model, rig, new Uint8Array(0));
+  const pb = partBoxes(rest.size, rest.data, rest.parts, 12);
+  const at = { x: 60, y: 30, z: 60 };
+  const sxy = size.x * size.y;
+  const restLookup = { size, voxel: (x: number, y: number, z: number) => rest.data[x + y * size.x + z * sxy], part: (x: number, y: number, z: number) => rest.data[x + y * size.x + z * sxy] ? rest.parts[x + y * size.x + z * sxy] + 1 : 0 };
+  let worst = 0, cells = 0;
+  for (let f = 0; f < 24; f++) {
+    const pose = restPose(12);
+    for (let k = 1; k < 12; k++) pose.rotations.set(quatAxisAngle(k % 3 === 0 ? [1, 0, 0] : [0, 1, 0], 0.25 * Math.sin(f * 0.7 + k)), k * 4);
+    const mats = poseMatrices(rig, pose);
+    // Baked (no weld or crack fill, no cover): what bake step one writes, drawn as an instance.
+    const posed = bakePose(model, rig, mats, { weld: false, fill: false, cover: new Uint8Array(0) });
+    const P = posed.size, pxy = P.x * P.y;
+    const w1 = new Uint32Array(INST_WORDS);
+    const b1 = packInstance({ ...at, anchor: posed.anchor, base: 1 }, { size: P }, 0, w1, 0).box;
+    const baked = new Map<number, number>();
+    const key = (x: number, y: number, z: number) => x + y * 1000 + z * 1000000;
+    for (let z = Math.floor(b1[2]); z < Math.ceil(b1[5]); z++) for (let y = Math.floor(b1[1]); y < Math.ceil(b1[4]); y++) for (let x = Math.floor(b1[0]); x < Math.ceil(b1[3]); x++) {
+      const v = sampleCpu(w1, 0, undefined, { size: P, voxel: (a, b, c) => posed.data[a + b * P.x + c * pxy], part: () => 0 }, x, y, z);
+      if (v) baked.set(key(x, y, z), v);
+    }
+    // Posed on the GPU: one instance, a transform per part, no weld (joints unset).
+    const w2 = new Uint32Array(INST_WORDS), parts = new Uint32Array(maxPartWords({ size, partBoxes: pb }));
+    const b2 = packInstance({ ...at, anchor: rest.anchor, base: 1, parts: mats }, { size, partBoxes: pb }, 0, w2, 0, parts, 0).box;
+    let diff = 0;
+    const seen = new Set<number>();
+    for (let z = Math.floor(b2[2]); z < Math.ceil(b2[5]); z++) for (let y = Math.floor(b2[1]); y < Math.ceil(b2[4]); y++) for (let x = Math.floor(b2[0]); x < Math.ceil(b2[3]); x++) {
+      const v = sampleCpu(w2, 0, parts, restLookup, x, y, z);
+      if (!v) continue;
+      const k = key(x, y, z);
+      seen.add(k);
+      if (baked.get(k) !== v) diff++;
+    }
+    for (const k of baked.keys()) if (!seen.has(k)) diff++;
+    worst = Math.max(worst, diff);
+    cells += baked.size;
+  }
+  ok(worst === 0, `a pose sampled per part draws exactly the cells baking writes (24 poses, ${cells} cells)`, `${worst} cells differ`);
 }
 
 console.log("cost:");

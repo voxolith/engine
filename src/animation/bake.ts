@@ -351,3 +351,65 @@ export function bakePose(model: EntityModel, rig: Rig, matrices: Float32Array, o
     roles: model.roles,
   };
 }
+
+/** A rigged rest model ready for posing on the GPU: see {@link prepareRigged}. */
+export interface RiggedModel {
+  size: { x: number; y: number; z: number };
+  /** Role values, with the rig's cover already applied to voxels buried at rest. */
+  data: Uint8Array;
+  /** Bone index per voxel. */
+  parts: Uint8Array;
+  /** Per bone: its parent (-1 for the root) and its head, where it joins the parent. */
+  joints: { parent: number; at: [number, number, number] }[];
+  /** The rest anchor. */
+  anchor: Vec3;
+}
+
+/**
+ * Prepare a rigged rest model to be posed on the GPU (`makeCrowd({ rigged: true })`, or a
+ * renderer instance with `parts`) instead of baked per pose. The renderer samples each world cell
+ * back through every bone's inverse into this one model, as {@link bakePose} does per posed cell,
+ * so the model is uploaded once and only bone matrices change per frame.
+ *
+ * The rig's cover is applied here: a voxel that was not on the rest surface draws its cover role
+ * (a limb swinging out shows fur, not flesh), since whatever the GPU draws is exposed. Wounds are
+ * carved into the rest model and so are on its surface, and keep showing their inside. Prepare
+ * again after `wound` or `sever`.
+ *
+ * Based on the rest-space animation of Gruen, Benthin, Kern and McAllister, "Ray Tracing Massive
+ * Amounts of Animated Geometry" (HPG 2026, doi:10.1145/3820014), and Kao, Makowski, Fujieda and
+ * Harada, "Voxel Deformation-Aware Neural Intersection Function" (EG 2026,
+ * doi:10.2312/egs.20261026). Unlike a bake, the diagonal bridges and crack fill are not
+ * reproduced (joints are still welded).
+ *
+ * @param model - The rest model; it must carry `bones`.
+ * @param rig - The entity's rig.
+ * @param cover - Role → cover role table; defaults to `rig.cover`.
+ * @returns The model with bone ids and joints, as `addModel` takes it with parts.
+ * @example
+ * ```ts
+ * const rest = prepareRigged(rat.model, rat.rig!);
+ * const id = renderer.addModel({ size: rest.size, data: rest.data, parts: rest.parts, joints: rest.joints });
+ * // per frame:
+ * const bones = poseMatrices(rat.rig!, sampleClip(walk, t, rat.rig!.bones.length));
+ * renderer.setInstances([{ model: id, x, y, z, anchor: rest.anchor, yaw, base: ratBase, parts: bones }], { dynamic: true });
+ * ```
+ */
+export function prepareRigged(model: EntityModel, rig: Rig, cover: ArrayLike<number> | undefined = rig.cover): RiggedModel {
+  if (!model.bones) throw new Error("prepareRigged needs a rigged model (model.bones)");
+  const data = Uint8Array.from(model.data);
+  if (cover) {
+    const surf = restSurface(model);
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i];
+      if (v && !surf[i] && cover[v]) data[i] = cover[v];
+    }
+  }
+  return {
+    size: { ...model.size },
+    data,
+    parts: model.bones,
+    joints: rig.bones.map((b) => ({ parent: b.parent, at: [b.head[0], b.head[1], b.head[2]] })),
+    anchor: [model.anchor[0], model.anchor[1], model.anchor[2]],
+  };
+}

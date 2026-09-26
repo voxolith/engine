@@ -11,7 +11,7 @@
 import type { Entity, EntityModel, Rig, Vec3 } from "../entity";
 import { toSprite, type BrickStamper, type Sprite, type StampStats } from "../dynamic";
 import type { InstanceLayer, InstancePlacement } from "../instances";
-import { bakePose } from "./bake";
+import { bakePose, prepareRigged } from "./bake";
 import type { PoseCache } from "./cache";
 import { makePoseCache } from "./cache";
 import { poseMatrices, sampleClip } from "./pose";
@@ -57,6 +57,19 @@ export interface CrowdOptions {
    * instancing; the layer's `commit` is called at the end of each update.
    */
   instances?: InstanceLayer;
+  /**
+   * With `instances`: pose members on the GPU instead of baking. Each variant's rest model is
+   * uploaded once (see `prepareRigged`) and every member is one instance carrying its bone
+   * matrices, so there are no bakes, no pose models and no per-pose uploads; the frame LOD still
+   * applies (it only saves matrix work now). Joints are welded but, unlike a bake, diagonal
+   * bridges and crack fill are not reproduced.
+   *
+   * Based on the rest-space animation of Gruen, Benthin, Kern and McAllister, "Ray Tracing
+   * Massive Amounts of Animated Geometry" (HPG 2026, doi:10.1145/3820014), and Kao, Makowski,
+   * Fujieda and Harada, "Voxel Deformation-Aware Neural Intersection Function" (EG 2026,
+   * doi:10.2312/egs.20261026).
+   */
+  rigged?: boolean;
   /** Share a pose cache between crowds. Default a new one with a 96 MiB budget. */
   cache?: PoseCache<BakedPose>;
   /** Clip sampling rate near the camera. Default 12. */
@@ -160,6 +173,8 @@ export function makeCrowd(opts: CrowdOptions): Crowd {
   const keepModels = opts.keepModels === true;
   const layer = opts.instances;
   if (!layer && !opts.stamper) throw new Error("makeCrowd needs a stamper or an instance layer");
+  if (opts.rigged && !layer) throw new Error("makeCrowd: rigged needs an instance layer");
+  if (opts.rigged && layer) return makeRiggedCrowd(opts, layer);
   // Evicted poses free their GPU model once no member shows them any more.
   const retired: number[] = [];
   const cache = opts.cache ?? makePoseCache<BakedPose>(
@@ -248,6 +263,71 @@ export function makeCrowd(opts: CrowdOptions): Crowd {
       }
       const st = opts.stamper!.commit();
       return { ...st, members: members.length, bakes, deferred, hits };
+    },
+  };
+}
+
+/**
+ * The GPU-posed crowd behind `makeCrowd({ instances, rigged: true })`: one rest model per variant
+ * (and damage state) and one instance per member with its bone matrices.
+ */
+function makeRiggedCrowd(opts: CrowdOptions, layer: InstanceLayer): Crowd {
+  const fps = opts.fps ?? 12;
+  const near = opts.near ?? 120, farFps = opts.farFps ?? 6, freeze = opts.freeze ?? 400;
+  // Bone matrices depend only on the variant, clip and frame; members share them.
+  const cache = opts.cache ?? makePoseCache<BakedPose>(() => 26 * 48 + 64, { maxBytes: 16 * 1024 * 1024 });
+  const rests = new Map<string, { id: number; anchor: Vec3 }>();
+  const lastPose = new Map<number, BakedPose>();
+  const frozen = new Map<number, number>();
+  const restOf = (m: CrowdMember) => {
+    const key = `${m.variant}.${m.damage ?? 0}`;
+    let r = rests.get(key);
+    if (!r) {
+      const rest = prepareRigged(m.rest ?? m.entity.model, m.entity.rig as Rig);
+      r = { id: layer.target.addModel({ size: rest.size, data: rest.data, parts: rest.parts, joints: rest.joints }), anchor: rest.anchor };
+      rests.set(key, r);
+    }
+    return r;
+  };
+  return {
+    cache,
+    last: (id) => lastPose.get(id),
+    remove(id) {
+      lastPose.delete(id);
+      frozen.delete(id);
+    },
+    update(members, cam) {
+      let hits = 0, bakes = 0;
+      const placed: InstancePlacement[] = [];
+      for (const m of members) {
+        const d = Math.hypot(m.x - cam[0], m.y - cam[1], m.z - cam[2]);
+        const rig = m.entity.rig as Rig;
+        const clip = m.anim.clip();
+        let frame: number;
+        if (d > freeze) frame = frozen.get(m.id) ?? Math.floor(m.anim.time() * fps);
+        else {
+          const rate = d > near ? farFps : fps;
+          frame = Math.floor(m.anim.time() * rate) * Math.round(fps / rate);
+          frozen.set(m.id, frame);
+        }
+        const rest = restOf(m);
+        const key = `${m.variant}|${clip}|${frame}`;
+        const before = cache.stats().misses;
+        const pose = cache.get(key, () => {
+          const c = m.entity.clips!.find((k) => k.id === clip)!;
+          return { matrices: poseMatrices(rig, sampleClip(c, frame / fps, rig.bones.length)), yaw: 0 };
+        });
+        if (cache.stats().misses > before) bakes++;
+        else hits++;
+        // The matrices carry no yaw (the instance turns), as on the baked instance path.
+        const shown: BakedPose = { matrices: pose.matrices, yaw: 0, instance: rest };
+        lastPose.set(m.id, shown);
+        placed.push({ model: rest.id, x: m.x, y: m.y, z: m.z, anchor: rest.anchor, yaw: m.yaw, base: m.base, parts: pose.matrices });
+      }
+      layer.setDynamic(placed);
+      layer.commit();
+      // `bakes` counts new bone-matrix sets here: there is nothing to bake.
+      return { bricks: 0, voxels: 0, movers: placed.length, members: members.length, bakes, deferred: 0, hits };
     },
   };
 }
