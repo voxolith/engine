@@ -7,16 +7,33 @@
 
 # @voxolith/engine
 
-Entities for the [Voxolith](https://github.com/voxolith/renderer) voxel engine: the model contract,
-the generator registry, an authoring toolkit and a headless preview renderer.
+The layer between the [Voxolith](https://github.com/voxolith/renderer) renderer and an app. It
+holds the **entity**, a voxel model with an anchor and named colour **roles** (voxel values are
+role indices, and the host maps role `r` to palette slot `base + r - 1`, so one scene mixes many
+entities and an entity restyles for a season, faction or damage without regenerating), and
+everything a host does with one: palette it, orient it, place it, stream it, draw it by reference,
+move it, animate it. It also holds the generator *contract* (`EntityGenerator`, `ParamSpec`, the
+registry, share codes), so a host can build a model from a seed at runtime, plus input, animation
+and atmosphere. The engine consumes baked models and never authors them: the authoring toolkit
+and the headless preview renderer are
+[`@voxolith/gen-kit`](https://github.com/voxolith/generators/tree/main/kit), beside the generators.
 
-An **entity** is a voxel model with an anchor and named colour **roles**, produced either from a
-`.vox` file or by a generator package such as
-[`@voxolith/gen-tree`](https://github.com/voxolith/gen-tree).
+## Install
+
+The package is **not on npm yet**. Until it is, clone it next to `voxolith/renderer` and your app
+and link them from a bun workspace (`"@voxolith/engine": "workspace:*"`); the
+[installation guide](https://voxolith.github.io/docs/getting-started/installation/) has the
+layout. Once published:
+
+```sh
+bun add @voxolith/engine @voxolith/renderer
+```
+
+## Quick start
 
 ```ts
 import { PaletteAllocator, blitModel } from "@voxolith/engine";
-import { entityFromVox, entityToVox } from "@voxolith/engine/vox";
+import { entityFromVox } from "@voxolith/engine/vox";
 
 const tree = entityFromVox(await (await fetch("oak.vox")).arrayBuffer(), { kind: "tree" });
 const palette = new PaletteAllocator();
@@ -25,156 +42,37 @@ blitModel(world, tree.model, { x: 64, y: 0, z: 64 }, base);
 renderer.updatePalette(palette.buildPalette());
 ```
 
-## Roles, not colours
-
-Voxel values are role indices, and the host maps role `r` of an entity to palette slot
-`base + r - 1`. One scene can then mix many entities inside the renderer's single 256-slot palette,
-and an entity can be restyled — season, faction, damage — without regenerating its geometry.
-
 ## Entry points
 
 | import | contents |
 |---|---|
-| `@voxolith/engine` | entity and generator contracts, registry, palette allocation, placement (runtime-safe: no DOM, no GPU) |
+| `@voxolith/engine` | entity and generator contracts, registry, share codes, palette allocation, orientation, placement, chunked worlds, instance layers, brick stamping (runtime-safe: no DOM, no GPU) |
 | `@voxolith/engine/vox` | MagicaVoxel import and export |
-| `@voxolith/engine/worker` | off-thread generation pool |
+| `@voxolith/engine/worker` | off-thread generation pool, with an optional IndexedDB model cache |
 | `@voxolith/engine/animation` | rigs and clips: play (`makeAnimator`), pose, bake posed models, damage (`wound`, `sever`), pose cache, crowds |
 | `@voxolith/engine/atmosphere` | time of day and weather as configuration: `timeOfDay`, `Atmosphere` presets, blending and transitions, `atmosphereFrame` into the renderer's settings |
 | `@voxolith/engine/input` | desktop and mobile input: pointers, keys, wheel, pointer lock, gamepad, gestures, actions, touch controls, orbit and look controllers (DOM only) |
 
-## Authoring lives with the generators
+## Documentation
 
-The engine consumes baked models: it places, orients, palettes, streams and blits them, and it
-holds the generator *contract* (`EntityGenerator`, `ParamSpec`, the registry, share codes) so a
-host can build a model from a seed at runtime. It does not author them. The toolkit generators are
-written with (dense volumes, rasterisers, noise, branch growth, canopy carving, rock masses) and
-the headless preview renderer are
-[`@voxolith/gen-kit`](https://github.com/voxolith/generators/tree/main/kit), in the generators repo.
+The long-form material lives on the documentation site, in the
+[engine section](https://voxolith.github.io/docs/engine/), which also covers share codes,
+stamping and crowds, workers and `.vox`:
 
-## Scale and instances
-
-Every generator's parameters are written in 10 voxels per metre. A finer world asks for the same
-design at more (`generate(params, rng, { voxelsPerMetre: 100 })`, `refinement(ctx)` gives the
-whole-number factor); generators that can say so in `scales` and refine their own models (see
-gen-kit `refine`). A model too large to hold densely comes back **sparse**: `EntityModel.sparse`
-(8³ bricks) in place of `data`, read through `modelAt`, `voxelCount`, `roleHistogram`.
-`looseRoles` names the roles that may come loose at a finer scale (single leaves, petals);
-everything else must still be one grounded piece.
-
-Large models are drawn by reference, not stamped: `makeInstanceLayer(renderer)` uploads each
-model once (`models.id(model)`), keeps static placements (scenery, sent once) apart from moving
-ones (sent every commit), and `orientationYaw(o)` turns an axis-aligned `Orientation` into the
-instance `{ yaw, mirror }` that draws exactly the same voxels. Instances take their colours from
-palettes of their own rather than from the world's 256 slots: `layer.palettes.of(key, roles,
-tint?)` makes one per key (a species, or a single placement with tinted roles), `restyle`
-recolours it in place; `instancePalette(roles)` builds the data for `Renderer.addPalette`. `makeCrowd({ instances })` places
-a crowd that way: one pose model per variant, clip and frame (no heading buckets), members at
-their exact position and yaw, nothing written into the world. The generator worker pool passes
-`ctx` through and hands sparse bricks back without copying. `serveGenerators({ cache: "name" })`
-keeps generated models in IndexedDB, deflated, keyed by generator, version, seed, parameters and
-context and salted with the worker's own URL (a production build hashes it), so the next visit
-loads them; the pool's `cached` counts the hits.
-
-## Input
-
-One `createInput(el)` per surface owns every listener; everything else reads from it, so two
-controls can share a canvas and the whole lot disposes in one call. Layers, each built on the
-one before:
-
-- **`createInput`**: Pointer Events (mouse, pen, touch) with capture; keys by `code` with a
-  focus guard and release-on-blur; wheel normalised across `deltaMode`s, ctrl+wheel reported as a
-  trackpad pinch; pointer lock; the first gamepad (standard mapping, radial deadzone); a virtual
-  channel for on-screen controls. Pass `{ loop }` and every event invalidates it; render
-  continuously while `input.active()`.
-- **`recogniseGestures`**: tap, double-tap, long-press, drag, pinch. Tap versus drag is decided
-  on total travel, so a slow pan is never a click; a second finger turns a drag into a pinch.
-  Recognisers on one input take a `priority` and can `claim` a pointer.
-- **`makeActions`**: named buttons and axes over `key:`, `pad:` and `touch:` sources, so game
-  code asks for `jump`, not Space. Bindings round-trip as JSON for rebinding.
-- **`makeTouchControls`**: a floating joystick and buttons feeding `touch:` sources, shown once a
-  touch is seen and hidden on mouse, keyboard or gamepad. Themed by `--vx-control-bg`,
-  `--vx-control-fg` and `--vx-control-active`.
-- **`makeOrbitController`** (turntable, clamped room, RTS map) and **`makeLookController`**
-  (first person: pointer lock, drag on touch, right stick, turn keys). Their state is what
-  `makeCamera` and `firstPersonFrame` take.
-
-```ts
-import { createInput, makeOrbitController, prepareSurface } from "@voxolith/engine/input";
-
-prepareSurface(canvas); // no browser pan/zoom, selection or tap flash over it
-const input = createInput(canvas, { loop });
-const orbit = makeOrbitController(input, { distance: 200, distanceLimits: [40, 600], pan: "secondary" });
-// in the frame: camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch())
-```
-
-## Animation
-
-Rigged entities (optional on the contract) carry `model.bones` (a bone per voxel), `rig` and
-`clips` (quaternion tracks per bone at 12 fps, a root offset, events such as footfalls).
-`@voxolith/engine/animation` is headless and pure:
-
-- `makeAnimator(entity)` plays clips with crossfades and reports events; `poseMatrices` turns a
-  pose into one rigid matrix per bone.
-- `bakePose(model, rig, matrices, { yaw })` produces the posed voxel model by **inverse mapping**
-  (every cell of a bone's posed box is taken back to rest space), so rotated limbs stay solid at
-  any angle; a crack pass closes joints, and `rig.cover` draws flesh a pose uncovers as fur.
-  About 0.6 ms for the 3.5k-voxel rat.
-- `wound` carves the rest model to expose its inside; `sever` cuts a bone's subtree off as its own
-  model and sub-rig, for a game to throw.
-- `makePoseCache`, and `makeCrowd`, which poses, caches and stamps many members on a budget: full
-  rate near the camera, stepped like sprite animation beyond `near`, frozen beyond `freeze`, a
-  millisecond budget for new bakes.
-
-Movers reach the world through `makeBrickStamper` (main barrel): per brick it keeps exactly the
-cells it overwrote and restores them inside the same edit that writes the movers' new positions,
-so things move through a streamed world with no dense copy; `Renderer.editMany` uploads a
-frame's bricks in one go.
-
-Measured headless (`bun run --cwd generators/creature bench`: CPU per frame for the crowd update
-and brick edits, not the upload or the draw), rats wandering a 512x512 field at 60 Hz:
-
-| rats | ms/frame | bakes/frame | bricks/frame | upload KB/frame |
-|---|---|---|---|---|
-| 10 | 0.4 | 0.1 | 52 | 15 |
-| 100 | 2.8 | 0.6 | 515 | 145 |
-| 500 | 15.5 | 1.0 | 2347 | 660 |
-| 1000 | 37.9 | 1.2 | 4293 | 1207 |
-
-Past a few hundred, brick re-encoding dominates. The next step is a dynamic entity layer on the
-GPU (instances with their own transform), which removes both the re-encode and the upload.
-
-## Atmosphere
-
-`atmosphereFrame(lighting, atmosphere, { voxelsPerMetre })` gives the same weather in a finer
-world: fog per voxel thins, rain and snow fall more voxels per second, and the renderer's
-`effectScale` keeps waves and drops their size.
-
-The renderer draws raw atmospheric effects and knows nothing about weather; a game decides
-whether there is weather and when it changes. `@voxolith/engine/atmosphere` sits between, with
-no simulation and no clock of its own:
-
-- `timeOfDay(phase)`: the lighting half of `FrameParams` for a time of day (0 midnight, 0.5 noon).
-  By day the key light follows the sun; at night it becomes a dim blue moonlight.
-- `Atmosphere`: cloud, precipitation (none, rain or snow, and intensity), wind, fog, and the
-  ground's `wetness` and snow `cover`. `ATMOSPHERES` has presets (`clear`, `cloudy`, `overcast`,
-  `rain`, `storm`, `snow`, `blizzard`, `fog`).
-- `blendAtmosphere`, `makeAtmosphereTransition` (eased, from wherever it is now), and `approach`
-  for a game's own accumulators: rain soaking the ground, snow settling, things drying.
-- `atmosphereFrame(lighting, atmosphere)`: the renderer's settings. Overcast dims and flattens the
-  key light and greys the sky, fog takes the horizon's colour, wind tilts the rain and drives the
-  clouds and the water. Clear weather passes the lighting through unchanged.
-
-```ts
-import { atmosphereFrame, ATMOSPHERES, timeOfDay } from "@voxolith/engine/atmosphere";
-
-renderer.render({ ...camera, ...atmosphereFrame(timeOfDay(0.5), { ...ATMOSPHERES.rain, wetness: 0.7 }), time });
-```
+- [Entities and roles](https://voxolith.github.io/docs/engine/entities-and-roles/): the entity shape, roles, palettes, sparse models
+- [The generator contract](https://voxolith.github.io/docs/engine/generator-contract/): `EntityGenerator`, `ParamSpec`, the registry, scales
+- [Placement and worlds](https://voxolith.github.io/docs/engine/placement-and-worlds/) and [Instances](https://voxolith.github.io/docs/engine/instances/): orientations, chunked worlds, drawing by reference
+- [Input](https://voxolith.github.io/docs/engine/input/): one input per surface, gestures, actions, touch controls, camera controllers
+- [Animation](https://voxolith.github.io/docs/engine/animation/): rigs, clips, baking by inverse mapping, damage
+- [Atmosphere](https://voxolith.github.io/docs/engine/atmosphere/): time of day, weather presets, transitions
+- [API reference](https://voxolith.github.io/docs/engine/api/): every export, generated from the source
 
 ## Development
 
 ```sh
 bun install
 bun run typecheck
+bun run verify
 ```
 
 ## License

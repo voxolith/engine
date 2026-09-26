@@ -1,7 +1,7 @@
 {
   "name": "@voxolith/engine",
   "version": "0.1.0",
-  "description": "Voxolith entities: the model + role contract, the generator registry, a headless authoring toolkit and a CPU preview renderer",
+  "description": "The Voxolith engine: entities and colour roles, the generator contract and registry, placement, instances, streaming, input, animation and atmosphere",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
