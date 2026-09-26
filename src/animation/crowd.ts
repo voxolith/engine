@@ -17,6 +17,10 @@ import { makePoseCache } from "./cache";
 import { poseMatrices, sampleClip } from "./pose";
 import type { Animator } from "./animator";
 
+/**
+ * One animated entity in a {@link Crowd}. The crowd reads these fields on every update and never
+ * writes them: the game owns the member, moves it and advances its animator.
+ */
 export interface CrowdMember {
   /** Stable, unique among the stamper's movers. */
   id: number;
@@ -27,16 +31,22 @@ export interface CrowdMember {
   damage?: number;
   /** Cache key shared by members that look identical (same variant, undamaged). */
   variant: string;
+  /** The member's clip player; call its `update(dt)` yourself before `crowd.update`. */
   anim: Animator;
-  /** Palette base for this member's roles. */
+  /**
+   * Palette base for this member's roles: a world slot from `PaletteAllocator` when
+   * stamping, an instance palette (`layer.palettes.of`) when drawing instances.
+   */
   base: number;
+  /** Where the entity's anchor goes, in world voxels. Fractional values are fine. */
   x: number;
   y: number;
   z: number;
-  /** Radians, 0 facing +z. */
+  /** Radians about +y, 0 facing +z. Stamped members snap to `headings` buckets. */
   yaw: number;
 }
 
+/** Options for {@link makeCrowd}. Distances are in world voxels from the camera. */
 export interface CrowdOptions {
   /** Stamp members into the world's bricks. One of `stamper` or `instances`. */
   stamper?: BrickStamper;
@@ -47,6 +57,7 @@ export interface CrowdOptions {
    * instancing; the layer's `commit` is called at the end of each update.
    */
   instances?: InstanceLayer;
+  /** Share a pose cache between crowds. Default a new one with a 96 MiB budget. */
   cache?: PoseCache<BakedPose>;
   /** Clip sampling rate near the camera. Default 12. */
   fps?: number;
@@ -54,6 +65,7 @@ export interface CrowdOptions {
   headings?: number;
   /** Full rate within this distance, `farFps` beyond it. Default 120. */
   near?: number;
+  /** Clip sampling rate beyond `near`. Default 6. */
   farFps?: number;
   /** Beyond this distance poses freeze (members still move). Default 400. */
   freeze?: number;
@@ -73,6 +85,7 @@ export interface CrowdOptions {
   stepFar?: boolean;
 }
 
+/** A cached pose of one variant: what was baked for a (variant, damage, clip, frame, heading) key. */
 export interface BakedPose {
   /** Only with `keepModels`. */
   model?: EntityModel;
@@ -80,26 +93,66 @@ export interface BakedPose {
   sprite?: Sprite;
   /** Instances only: the pose's model id and anchor. */
   instance?: { id: number; anchor: Vec3 };
+  /** Bone matrices of the pose (see `poseMatrices`), for hit tests against bones. */
   matrices: Float32Array;
+  /** The yaw the pose was baked at, radians: the heading bucket, or 0 for instances. */
   yaw: number;
 }
 
+/** What one {@link Crowd.update} did. The stamping counters are 0 when drawing instances. */
 export interface CrowdStats extends StampStats {
+  /** Members passed in. */
   members: number;
+  /** Poses baked this update (cache misses). */
   bakes: number;
   /** Members whose new pose did not fit the budget and kept the old one. */
   deferred: number;
+  /** Poses served from the cache. */
   hits: number;
 }
 
+/** A crowd of animated entities, from {@link makeCrowd}. */
 export interface Crowd {
+  /**
+   * Pose, bake (within `budgetMs`) and place every member, then commit the stamper or instance
+   * layer. Call once per frame after moving the members and advancing their animators. Members
+   * left out of the list are not removed; call `remove` for those.
+   *
+   * @param camera - Camera position in world voxels, for the distance LOD.
+   */
   update(members: readonly CrowdMember[], camera: [number, number, number]): CrowdStats;
   /** The pose each member was last stamped with (for hit tests). */
   last(id: number): BakedPose | undefined;
+  /** Forget a member and, when stamping, erase it from the world on the next commit. */
   remove(id: number): void;
+  /** The pose cache; `drop(variant + ".")` frees one variant's poses. */
   readonly cache: PoseCache<BakedPose>;
 }
 
+/**
+ * Animate many rigged entities on a budget. Each update picks every member's pose frame (at
+ * `fps` near the camera, `farFps` beyond `near`, frozen beyond `freeze`), takes the baked pose
+ * from a cache shared by members of the same variant, bakes missing ones within `budgetMs`
+ * (a member that does not fit keeps last frame's pose), and either stamps it into the world
+ * through a {@link BrickStamper} or draws it through an {@link InstanceLayer}.
+ *
+ * Stamping buckets headings (`headings`, default 16) and costs brick uploads for every member
+ * that moves; instances turn and move smoothly and write nothing into the world.
+ *
+ * @param opts - Exactly one of `stamper` or `instances` is required.
+ * @returns The crowd.
+ * @example
+ * ```ts
+ * const crowd = makeCrowd({ stamper: makeBrickStamper(renderer, { size: SIZE }), near: 140, farFps: 6, freeze: 700 });
+ * const members: CrowdMember[] = rats.map((entity, i) => ({
+ *   id: i + 1, entity, variant: "rat", anim: makeAnimator(entity, "walk"), base: ratBase,
+ *   x: 100 + i * 20, y: 1, z: 100, yaw: 0,
+ * }));
+ * // per frame:
+ * for (const m of members) m.anim.update(dt);
+ * const stats = crowd.update(members, frame.camPos as [number, number, number]);
+ * ```
+ */
 export function makeCrowd(opts: CrowdOptions): Crowd {
   const fps = opts.fps ?? 12, headings = opts.headings ?? 16;
   const near = opts.near ?? 120, farFps = opts.farFps ?? 6, freeze = opts.freeze ?? 400;

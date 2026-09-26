@@ -17,10 +17,18 @@ import { recogniseGestures, type DragEvent, type GestureOptions } from "./gestur
 
 type Vec3 = [number, number, number];
 
+/**
+ * Options for {@link makeOrbitController}. Angles are in degrees; distance and target are in
+ * world units (voxels), as the renderer's `makeCamera` takes them.
+ */
 export interface OrbitOptions {
+  /** Initial yaw, degrees. Default 35. */
   yaw?: number;
+  /** Initial pitch above the horizon, degrees. Default 25. */
   pitch?: number;
+  /** Initial distance from the target. Default 100. */
   distance?: number;
+  /** Initial point orbited. Default the origin. */
   target?: Vec3;
   /** Clamp yaw (degrees). Default unbounded. */
   yawLimits?: [number, number];
@@ -49,18 +57,48 @@ export interface OrbitOptions {
   gestures?: GestureOptions;
 }
 
+/**
+ * An orbit camera's state, from {@link makeOrbitController}. Dragging right decreases `yaw()`
+ * (the scene turns with the pointer); dragging down raises `pitch()`.
+ */
 export interface OrbitController {
+  /** Degrees. */
   yaw(): number;
+  /** Degrees above the horizon. */
   pitch(): number;
   distance(): number;
+  /** The point orbited. Replaced, not mutated, when it changes. */
   target(): Vec3;
+  /** Move the camera from code; values are clamped to the limits and `onChange` fires. */
   set(state: Partial<{ yaw: number; pitch: number; distance: number; target: Vec3 }>): void;
   /** A drag or pinch is under way (e.g. to stop an idle turntable). */
   interacting(): boolean;
+  /** Ignore input while disabled; `set` still works. */
   setEnabled(on: boolean): void;
+  /** Stop listening to the input. */
   dispose(): void;
 }
 
+/**
+ * An orbit camera over an input: turntable, look-around room or pan-only map, depending on
+ * `rotate` and `pan`. Desktop: primary drag rotates, right/middle or shift+drag pans (with
+ * `pan: "secondary"`), wheel and ctrl+wheel zoom. Touch: one finger rotates, two pinch to zoom
+ * and drag to pan (or to turn, when panning is off). Long-press is off in its recogniser.
+ *
+ * The controller only holds state; read it each frame into the renderer's `makeCamera`.
+ *
+ * @param input - The surface's input.
+ * @returns The camera state and controls.
+ * @example
+ * ```ts
+ * const camera = makeCamera({ target: [48, 8, 48], distance: 200, pitchDeg: 32, fovDeg: 35 });
+ * const orbit = makeOrbitController(input, {
+ *   yaw: 35, pitch: 32, distance: 200, distanceLimits: [40, 600],
+ *   target: [48, 8, 48], pan: "secondary", fovDeg: 35, onChange: () => loop.invalidate(),
+ * });
+ * renderer.render({ ...camera(orbit.yaw(), orbit.distance(), orbit.target(), orbit.pitch()) });
+ * ```
+ */
 export function makeOrbitController(input: Input, opts: OrbitOptions = {}): OrbitController {
   let yaw = opts.yaw ?? 35;
   let pitch = opts.pitch ?? 25;

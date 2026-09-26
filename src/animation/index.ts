@@ -1,11 +1,18 @@
-// @voxolith/engine/animation — rigs, clips, poses and damage for animated entities.
-//
-// Headless and pure. A generator authors a rigged entity (a rest model whose
-// voxels know their bone, a rig, clips); this module plays the clips, turns a
-// pose into bone matrices, bakes the posed voxel model, and damages the rest
-// model (wounds that expose the interior, severed limbs as separate pieces).
-// Getting the posed model into the world is the host's job (see
-// makeBrickStamper in the engine barrel).
+/**
+ * `@voxolith/engine/animation`: rigs, clips, poses and damage for animated entities.
+ *
+ * Headless and pure. A generator authors a rigged entity (a rest model whose voxels know their
+ * bone, a rig, clips at 12 frames per second); this module plays the clips
+ * ({@link makeAnimator}), turns a pose into bone matrices ({@link poseMatrices}), bakes the
+ * posed voxel model ({@link bakePose}), and damages the rest model ({@link wound} exposes the
+ * interior, {@link sever} cuts a limb off as a separate piece).
+ *
+ * Getting the posed model into the world is the host's job: stamp it with `makeBrickStamper`
+ * from the engine barrel, or draw it as an instance. {@link makeCrowd} does either for many
+ * animated entities at once, with a pose cache, a bake budget and distance LOD.
+ *
+ * @packageDocumentation
+ */
 
 export { bakePose } from "./bake";
 export type { BakeOptions } from "./bake";

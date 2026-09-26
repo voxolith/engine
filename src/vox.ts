@@ -1,18 +1,26 @@
-// MagicaVoxel interop: `.vox` in, `.vox` out.
-//
-// This is the "entities which match existing models" path — any `.vox` the
-// project already ships becomes an entity, with one role per distinct colour
-// it uses. It is also how generated entities leave the engine for the viewer,
-// the editor or MagicaVoxel itself.
-//
-// Axis convention: `.vox` is Z-up, entities are Y-up. Both directions swizzle
-// (model x, y, z) <-> (entity x, z, y), the same mapping the viewer uses.
+/**
+ * MagicaVoxel interop: `.vox` in, `.vox` out.
+ *
+ * This is the "entities which match existing models" path: any `.vox` the project already ships
+ * becomes an entity, with one role per distinct colour it uses. It is also how generated
+ * entities leave the engine for the viewer, the editor or MagicaVoxel itself.
+ *
+ * Axis convention: `.vox` is Z-up, entities are Y-up. Both directions swizzle
+ * (model x, y, z) <-> (entity x, z, y), the same mapping the viewer uses.
+ *
+ * Headless: it parses and writes buffers, so it runs in bun and workers as well as the browser.
+ *
+ * @packageDocumentation
+ */
 
 import { parseVox, writeVox, type VoxModel } from "@voxolith/renderer/vox";
 import type { Entity, EntityModel, RGB, Role } from "./entity";
 
+/** Options for {@link entityFromVox}. */
 export interface FromVoxOptions {
+  /** `Entity.id`. Default "vox". */
   id?: string;
+  /** `Entity.kind`. Default "model". */
   kind?: string;
   /** Role id prefix; roles come out as `${prefix}.0`, `.1`, ... */
   rolePrefix?: string;
@@ -21,14 +29,28 @@ export interface FromVoxOptions {
    * which is what you want for anything that stands on the ground.
    */
   anchor?: "base" | "centre" | [number, number, number];
+  /** Merged into `Entity.meta` after `source` and `srcSize`. */
   meta?: Record<string, unknown>;
 }
 
-/** Parse a `.vox` buffer into an entity, cropped to its occupied box. */
+/**
+ * Parse a `.vox` buffer into an entity, cropped to its occupied box. Each distinct palette
+ * colour becomes a role (`color.0`, `color.1`, ... in first-seen order, colours from the file's
+ * palette), so the entity can be restyled like a generated one. Only the first model in the file
+ * is read; colours past 255 roles are dropped.
+ *
+ * @example
+ * ```ts
+ * const res = await fetch(`${import.meta.env.BASE_URL}models/chair.vox`);
+ * const chair = entityFromVox(await res.arrayBuffer(), { id: "chair", kind: "furniture" });
+ * const { base } = palette.allocateFor(chair);
+ * ```
+ */
 export function entityFromVox(buffer: ArrayBuffer, opts: FromVoxOptions = {}): Entity {
   return entityFromVoxModel(parseVox(buffer), opts);
 }
 
+/** {@link entityFromVox} for a model already parsed with the renderer's `parseVox`. */
 export function entityFromVoxModel(m: VoxModel, opts: FromVoxOptions = {}): Entity {
   // Occupied box in model space (Z-up).
   let mnx = Infinity, mny = Infinity, mnz = Infinity;
@@ -90,7 +112,15 @@ function resolveAnchor(
 /**
  * Serialise an entity to `.vox`. MagicaVoxel stores coordinates in single
  * bytes, so no axis may exceed 255; larger models throw rather than silently
- * wrapping.
+ * wrapping. Role colours become the file's palette (role `v` at index `v`); materials, rigs and
+ * clips are not written. Dense models only: a `sparse` model has empty `data` and writes nothing.
+ *
+ * @returns The file's bytes.
+ * @example
+ * ```ts
+ * const bytes = entityToVox(tree);
+ * const url = URL.createObjectURL(new Blob([bytes]));
+ * ```
  */
 export function entityToVox(entity: Entity): ArrayBuffer {
   const { size, data, roles } = entity.model;

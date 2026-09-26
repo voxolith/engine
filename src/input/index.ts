@@ -1,15 +1,25 @@
-// @voxolith/engine/input — desktop and mobile input for Voxolith apps.
-//
-// DOM-only, so it lives on its own subpath and the engine barrel stays
-// runtime-safe. Layered; each layer only uses the ones above it here:
-//
-//   createInput        one per surface: pointers, keys, wheel, pointer lock,
-//                      gamepad, a virtual channel; owns every listener
-//   recogniseGestures  tap, double-tap, long-press, drag, pinch (touch and
-//                      trackpad), with claiming between recognisers
-//   makeActions        named buttons and axes over keys, pad and touch
-//   makeTouchControls  on-screen joystick and buttons feeding the actions
-//   makeOrbitController, makeLookController   the two camera styles
+/**
+ * `@voxolith/engine/input`: desktop and mobile input for Voxolith apps.
+ *
+ * DOM-only, so it lives on its own subpath and the engine barrel stays runtime-safe. Apps take
+ * all camera and movement input from here rather than adding raw listeners. Layered; each layer
+ * only uses the ones above it here:
+ *
+ * - {@link createInput}: one per surface: pointers, keys, wheel, pointer lock, gamepad, a
+ *   virtual channel; owns every listener. {@link prepareSurface} readies the element.
+ * - {@link recogniseGestures}: tap, double-tap, long-press, drag, pinch (touch and trackpad),
+ *   with claiming between recognisers. Tap versus drag is decided on total travel.
+ * - {@link makeActions}: named buttons and axes over keys, pad and touch
+ * - {@link makeTouchControls}: on-screen joystick and buttons feeding the actions
+ * - {@link makeOrbitController}, {@link makeLookController}: the two camera styles. Their state
+ *   feeds the renderer's `makeCamera` and `firstPersonFrame`. Dragging right decreases an orbit
+ *   camera's yaw; turning right increases a first-person yaw.
+ *
+ * Pass the app's frame loop to `createInput` so every event requests a frame, and render
+ * continuously while `input.active()`.
+ *
+ * @packageDocumentation
+ */
 
 export {
   createInput,

@@ -4,12 +4,22 @@
 import type { Clip, ClipEvent, Entity } from "../entity";
 import { blendPoses, clipTime, restPose, sampleClip, type Pose } from "./pose";
 
+/** Plays one entity's clips, from {@link makeAnimator}. Times are in seconds. */
 export interface Animator {
-  /** Switch to a clip, crossfading over `fade` seconds (default 0.2). */
+  /**
+   * Switch to a clip, crossfading over `fade` seconds (default 0.2). Playing the current clip
+   * again does nothing unless `restart`; `speed` (default 1) scales time and is set either way.
+   * Throws on an unknown clip id.
+   */
   play(id: string, opts?: { fade?: number; restart?: boolean; speed?: number }): void;
   /** Advance; returns the events crossed since the last update. */
   update(dt: number): ClipEvent[];
+  /**
+   * The current pose, crossfaded if a fade is under way. The object is reused by the next call,
+   * so pass it straight to `poseMatrices` or copy it.
+   */
   pose(): Pose;
+  /** Current clip id, or "" when the entity has no clips. */
   clip(): string;
   /** Seconds into the current clip (wrapped for loops). */
   time(): number;
@@ -17,6 +27,22 @@ export interface Animator {
   finished(): boolean;
 }
 
+/**
+ * A clip player for one rigged entity: the current clip, a crossfade from the previous one, and
+ * the clip events crossed since the last update. Pure and headless; one per animated instance,
+ * since it holds that instance's time.
+ *
+ * @param entity - A rigged entity (`rig` and `clips`); without clips it stays at rest.
+ * @param initial - Clip to start on. Default the first clip.
+ * @returns The animator.
+ * @example
+ * ```ts
+ * const anim = makeAnimator(rat, "walk");
+ * anim.play("run", { fade: 0.1 });
+ * for (const e of anim.update(dt)) if (e.name === "step") footstep();
+ * const matrices = poseMatrices(rat.rig!, anim.pose());
+ * ```
+ */
 export function makeAnimator(entity: Entity, initial?: string): Animator {
   const clips = new Map((entity.clips ?? []).map((c) => [c.id, c]));
   const n = entity.rig?.bones.length ?? 0;

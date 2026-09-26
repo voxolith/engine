@@ -27,6 +27,7 @@ export interface InstanceTarget {
   setInstances(list: readonly InstancePlacement[], opts?: { dynamic?: boolean }): void;
 }
 
+/** One instance of an uploaded model, as the renderer's `setInstances` takes it. */
 export interface InstancePlacement {
   /** Model id from `addModel` (or ModelLibrary.id). */
   model: number;
@@ -40,7 +41,10 @@ export interface InstancePlacement {
   yaw?: number;
   /** Mirror along the model's x before turning (see `orientationYaw`). */
   mirror?: boolean;
-  /** Palette slot of role 1. */
+  /**
+   * Palette slot of role 1: an instance palette's base (`PaletteLibrary.of`), or a world slot
+   * for instances coloured like stamped voxels.
+   */
   base: number;
 }
 
@@ -52,6 +56,7 @@ export function orientationYaw(o: number): { yaw: number; mirror: boolean } {
   return { yaw: -(o & 3) * (Math.PI / 2), mirror: (o & 4) !== 0 };
 }
 
+/** Uploaded models by identity, from {@link makeModelLibrary}. */
 export interface ModelLibrary {
   /** The model's id on the target, uploading it the first time it is seen. */
   id(model: EntityModel): number;
@@ -61,6 +66,11 @@ export interface ModelLibrary {
   readonly size: number;
 }
 
+/**
+ * Upload each model to an instancing target once, keyed by object identity: pass the same
+ * `EntityModel` object and get the same id back. Dense and sparse models both work. Models stay
+ * on the GPU until released. {@link makeInstanceLayer} makes one for you.
+ */
 export function makeModelLibrary(target: InstanceTarget): ModelLibrary {
   const ids = new Map<EntityModel, number>();
   return {
@@ -86,12 +96,17 @@ export function makeModelLibrary(target: InstanceTarget): ModelLibrary {
 
 /** A placement of an entity's model, by model rather than id. */
 export interface EntityPlacement {
+  /** Uploaded on first use; its own `anchor` is used. */
   model: EntityModel;
+  /** Where the anchor goes, in world voxels; fractions are fine. */
   x: number;
   y: number;
   z: number;
+  /** Radians about +y, any angle. */
   yaw?: number;
+  /** Mirror along the model's x before turning. */
   mirror?: boolean;
+  /** Palette slot of role 1. */
   base: number;
 }
 
@@ -105,12 +120,19 @@ export interface PaletteLibrary {
   of(key: string, roles: readonly Role[], tint?: (color: RGB, role: Role, index: number) => RGB): number;
   /** Recolour the palette for `key` in place: every instance using it changes. */
   restyle(key: string, roles: readonly Role[], tint?: (color: RGB, role: Role, index: number) => RGB): void;
+  /** Free the palette for `key`; move placements that use its base off it first. */
   release(key: string): void;
-  /** Palettes held, and their slots. */
+  /** Palettes held. */
   readonly size: number;
+  /** Slots those palettes use in total. */
   readonly slots: number;
 }
 
+/**
+ * Instance palettes by key on an instancing target. They live after the world's 256 slots, so
+ * they need no {@link PaletteAllocator} budget. {@link makeInstanceLayer} makes one for you as
+ * `layer.palettes`.
+ */
 export function makePaletteLibrary(target: InstanceTarget): PaletteLibrary {
   const byKey = new Map<string, { base: number; n: number }>();
   let slots = 0;
@@ -143,20 +165,47 @@ export function makePaletteLibrary(target: InstanceTarget): PaletteLibrary {
   };
 }
 
+/**
+ * Instanced drawing for a scene: static scenery and a moving set, sent to the renderer together.
+ * From {@link makeInstanceLayer}.
+ */
 export interface InstanceLayer {
+  /** The renderer it draws through. */
   readonly target: InstanceTarget;
+  /** Models uploaded by `setStatic`; use it to get ids for `setDynamic` placements. */
   readonly models: ModelLibrary;
+  /** Instance palettes; `palettes.of(key, roles)` gives the `base` for a placement. */
   readonly palettes: PaletteLibrary;
   /** Replace the static placements (scenery); the model's own anchor is used. */
   setStatic(list: readonly EntityPlacement[]): void;
   /** Replace the moving placements (a crowd's, every frame). */
   setDynamic(list: readonly InstancePlacement[]): void;
-  /** Send both to the target. Cheap to call every frame. */
+  /**
+   * Send both to the target: the static set only when it changed, the moving set every time.
+   * Nothing is drawn until the first commit. Cheap to call every frame; a `Crowd` drawing
+   * into this layer commits for you.
+   */
   commit(): void;
   /** Placements sent last commit. */
   count(): number;
 }
 
+/**
+ * Draw entities by reference instead of stamping them into the world: one GPU copy of each
+ * model, drawn wherever it is placed, at any yaw, mirrored, at fractional positions. Instances
+ * use palettes of their own, so a scene of instances has no colour budget, and nothing is
+ * written into the world's bricks.
+ *
+ * @param target - A renderer with instancing (`Renderer` implements {@link InstanceTarget}).
+ * @returns The layer; pass it to `makeCrowd` as `instances` for animated members.
+ * @example
+ * ```ts
+ * const layer = makeInstanceLayer(renderer);
+ * const oakBase = layer.palettes.of("oak", oak.model.roles);
+ * layer.setStatic(sites.map((s) => ({ model: oak.model, x: s.x, y: s.y, z: s.z, yaw: s.yaw, base: oakBase })));
+ * layer.commit();
+ * ```
+ */
 export function makeInstanceLayer(target: InstanceTarget): InstanceLayer {
   const models = makeModelLibrary(target);
   const palettes = makePaletteLibrary(target);

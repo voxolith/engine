@@ -8,12 +8,29 @@
 
 import type { Bone, EntityModel, Rig, Vec3 } from "../entity";
 
+/** Options for {@link wound} and {@link sever}. */
 export interface WoundOptions {
   /** Role value painted on the wound's rim (blood), if any. */
   rim?: number;
 }
 
-/** Remove the voxels within `radius` of a rest-space point; optionally paint the rim. */
+/**
+ * Remove the voxels within `radius` of a rest-space point and optionally paint a rim around the
+ * hole. Returns a new model (the input is not changed); keep it as the entity's rest model so the
+ * wound shows in every pose baked afterwards. A generator that layers its interior shows what is
+ * underneath, and poses do not hide it behind `rig.cover`.
+ *
+ * @param model - The rest model.
+ * @param point - Centre in the rest model's voxel coordinates (map a world hit back through the
+ *   inverse bone matrix of the pose it hit).
+ * @param radius - In voxels; at least 0.5.
+ * @returns The wounded rest model; its `bones` are kept.
+ * @example
+ * ```ts
+ * rat.rest = wound(rat.rest, hitInRest, 2.2, { rim: ROLE.BLOOD });
+ * member.damage = (member.damage ?? 0) + 1; // so a crowd stops reusing the old poses
+ * ```
+ */
 export function wound(model: EntityModel, point: Vec3, radius: number, opts: WoundOptions = {}): EntityModel {
   const { x: sx, y: sy, z: sz } = model.size;
   const sxy = sx * sy;
@@ -34,6 +51,7 @@ export function wound(model: EntityModel, point: Vec3, radius: number, opts: Wou
   return { ...model, data, bones };
 }
 
+/** The result of {@link sever}. */
 export interface Severed {
   /** What is left, still on the original rig (the severed bones own no voxels). */
   body: EntityModel;
@@ -50,7 +68,18 @@ export function subtree(rig: Rig, bone: number): Set<number> {
 
 /**
  * Cut a bone and everything below it off the model. The stump and the cut
- * face of the piece get the rim role (blood, raw flesh) when given.
+ * face of the piece get the rim role (blood, raw flesh) when given. Pure: the input model is not
+ * changed, and throwing the piece around is the game's job.
+ *
+ * @param model - The rest model; it must carry `bones`.
+ * @param bone - Index into `rig.bones` of the first bone to cut.
+ * @returns The remaining body and the piece, or `piece: null` when the subtree owns no voxels.
+ * @example
+ * ```ts
+ * const { body, piece } = sever(rat.rest, rig, tailBone, { rim: ROLE.BLOOD });
+ * rat.rest = body;
+ * if (piece) gibs.push({ model: piece.model, rig: piece.rig, x, y, z });
+ * ```
  */
 export function sever(model: EntityModel, rig: Rig, bone: number, opts: WoundOptions = {}): Severed {
   if (!model.bones) throw new Error("sever needs a rigged model (model.bones)");

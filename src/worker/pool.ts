@@ -12,6 +12,7 @@ import type { Entity } from "../entity";
 import type { GenerateContext } from "../generator";
 import type { GenerateRequest, WorkerResponse } from "./protocol";
 
+/** Options for {@link makeGeneratorPool}. */
 export interface GeneratorPoolOptions {
   /**
    * Creates one worker. The consumer supplies this because only their bundler
@@ -27,17 +28,32 @@ export interface GeneratorPoolOptions {
   size?: number;
 }
 
+/**
+ * One entity to generate. Everything in it is posted to a worker, so it must be structured-
+ * cloneable (plain data, no functions).
+ */
 export interface GenerateSpec {
+  /** `EntityGenerator.id`, registered in the worker (e.g. "voxolith/tree.broadleaf"). */
   generator: string;
+  /** The generator's parameters, in its units (10 voxels per metre). */
   params: unknown;
+  /** Seeds the generator's rng; the same spec always gives the same entity. */
   seed: number;
+  /** Sets the produced entity's `id`. */
   entityId?: string;
   /** Passed to the generator, e.g. { voxelsPerMetre: 100 }. */
   ctx?: GenerateContext;
 }
 
+/**
+ * A pool of generator workers, from {@link makeGeneratorPool}. Entities come back with their
+ * buffers transferred, so the main thread owns them outright.
+ */
 export interface GeneratorPool {
-  /** Generate one entity on the next free worker. */
+  /**
+   * Generate one entity on the next free worker. Rejects when the generator is not registered in
+   * the worker, throws, the worker dies, or the pool is destroyed.
+   */
   generate(spec: GenerateSpec): Promise<Entity>;
   /**
    * Generate many, spread across the pool. Resolves in the order given, not the
@@ -48,6 +64,7 @@ export interface GeneratorPool {
   ready(): Promise<void>;
   /** Terminate every worker. The pool is unusable afterwards. */
   destroy(): void;
+  /** Number of workers. */
   readonly size: number;
   /** Requests issued but not yet resolved. */
   readonly pending: number;
@@ -67,6 +84,32 @@ function defaultSize(): number {
   return Math.max(1, Math.min(4, cores - 1));
 }
 
+/**
+ * Run entity generators on a pool of workers, main-thread side. Generation is pure CPU work, so
+ * doing it here keeps the render thread free and spreads it across cores. Each worker runs
+ * {@link serveGenerators} with its own registry; the pool queues requests and hands each to the
+ * next free worker. Browser-only (needs `Worker`).
+ *
+ * @param opts - `spawn` creates one worker; only the consumer's bundler can resolve its entry.
+ * @returns The pool. Call `destroy()` when done; idle workers hold their memory.
+ * @example
+ * ```ts
+ * import { broadleafGenerator as oak } from "@voxolith/gen-tree";
+ *
+ * const pool = makeGeneratorPool({
+ *   spawn: () => new Worker(new URL("./gen.worker.ts", import.meta.url), { type: "module" }),
+ * });
+ * try {
+ *   await pool.ready();
+ *   const trees = await pool.generateMany(
+ *     [1, 2, 3].map((seed) => ({ generator: oak.id, params: oak.defaults, seed })),
+ *     (done, total) => (info.textContent = `${done}/${total}`),
+ *   );
+ * } finally {
+ *   pool.destroy();
+ * }
+ * ```
+ */
 export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
   const size = Math.max(1, Math.floor(opts.size ?? defaultSize()));
   const waiting: { spec: GenerateSpec; resolve: (e: Entity) => void; reject: (e: Error) => void }[] = [];

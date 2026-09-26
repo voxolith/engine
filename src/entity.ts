@@ -14,9 +14,11 @@
 import { sparseCount, sparseGet, type SparseVoxels } from "@voxolith/renderer/core";
 
 export type { SparseVoxels };
+/** A point or vector, in voxels unless stated otherwise. Y is up. */
 export type Vec3 = [number, number, number];
 /** Linear RGB in 0..1, matching the renderer's palette. */
 export type RGB = [number, number, number];
+/** Extent in voxels along each axis. Y is height. */
 export interface Size {
   x: number;
   y: number;
@@ -55,9 +57,15 @@ export interface Role {
   name: string;
   /** Default colour, used when the host has no opinion. */
   color: RGB;
+  /** Shading for the role's palette slot; plain diffuse when absent. */
   material?: MaterialHint;
 }
 
+/**
+ * The voxels of an entity: role indices in a Y-up box, with an anchor and the roles they refer
+ * to. Dense (`data`) or, for large refined models, sparse (`sparse`); read either through
+ * {@link modelAt}.
+ */
 export interface EntityModel {
   /** Tight bounding box of the occupied voxels, Y-up (y is height). */
   size: Size;
@@ -77,6 +85,7 @@ export interface EntityModel {
    * anchor with a ground cell rather than guessing at the box corner.
    */
   anchor: Vec3;
+  /** The colour roles; voxel value `v` is `roles[v - 1]`. At most 255. */
   roles: Role[];
   /**
    * Rigged models only: which bone owns each voxel (index into `Entity.rig.bones`),
@@ -90,14 +99,18 @@ export interface EntityModel {
  * about its `head`; `tail` is where its children usually start.
  */
 export interface Bone {
+  /** Stable name, e.g. "head" or "tail1". Tracks address bones by index, not by id. */
   id: string;
   /** Index of the parent bone, or -1 for the root. Parents come before children. */
   parent: number;
+  /** The joint the bone rotates about. */
   head: Vec3;
   tail: Vec3;
 }
 
+/** The skeleton of a rigged entity; `EntityModel.bones` indexes into `bones`. */
 export interface Rig {
+  /** Ordered parents first, as posing requires. At most 256 (bone indices are 8-bit). */
   bones: Bone[];
   /**
    * Role value → role to draw instead when a pose exposes a voxel that was
@@ -108,6 +121,7 @@ export interface Rig {
 
 /** Keyframed rotations for one bone. Rotations are unit quaternions (x, y, z, w), relative to rest. */
 export interface ClipTrack {
+  /** Index into `Rig.bones`. */
   bone: number;
   /** Seconds, ascending, starting at 0. */
   times: number[];
@@ -117,26 +131,41 @@ export interface ClipTrack {
 
 /** A named moment in a clip: a footfall, a bite. For sound, dust, gameplay. */
 export interface ClipEvent {
+  /** Seconds into the clip. */
   t: number;
   name: string;
 }
 
+/**
+ * One animation of a rigged entity: quaternion tracks per bone, keyed in seconds. Generators
+ * author clips at 12 frames per second, which is the rate poses are cached at.
+ */
 export interface Clip {
+  /** Name the animator plays it by, e.g. "walk". */
   id: string;
   /** Seconds. */
   duration: number;
+  /** Loops wrap time; one-shot clips hold their last frame. */
   loop: boolean;
+  /** Bones without a track stay at rest. */
   tracks: ClipTrack[];
   /** Offset of the root in voxels over time (a bob, a crouch): times + 3 numbers per key. */
   root?: { times: number[]; offsets: number[] };
+  /** Reported by `Animator.update` as they are crossed. */
   events?: ClipEvent[];
 }
 
+/**
+ * The unit the engine places in a world: a voxel model with its roles, what it is, where it came
+ * from and, for rigged entities, a skeleton and clips. Produced by generators and by
+ * `entityFromVox`.
+ */
 export interface Entity {
   /** Unique within a scene. */
   id: string;
   /** What it is, e.g. "tree.broadleaf". Hosts group and cull by this. */
   kind: string;
+  /** The voxels, at rest for a rigged entity. */
   model: EntityModel;
   /** Generator parameters, seed, species, timings — free-form provenance. */
   meta: Record<string, unknown>;
@@ -146,9 +175,11 @@ export interface Entity {
   clips?: Clip[];
 }
 
+/** Linear index of a voxel in dense `EntityModel.data` (x fastest, then y, then z). No bounds check. */
 export const modelIndex = (size: Size, x: number, y: number, z: number): number =>
   x + y * size.x + z * size.x * size.y;
 
+/** Role value at a voxel, dense or sparse; 0 outside the box. */
 export function modelAt(model: EntityModel, x: number, y: number, z: number): number {
   if (model.sparse) return sparseGet(model.sparse, x, y, z);
   const { x: sx, y: sy, z: sz } = model.size;

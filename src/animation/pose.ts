@@ -8,13 +8,15 @@
 import type { Clip, Rig } from "../entity";
 import { mulAffine, quatToMat, slerpInto, type Vec3 } from "./math";
 
+/** A skeleton pose: what clips are sampled into and `poseMatrices` consumes. */
 export interface Pose {
-  /** Four numbers (x, y, z, w) per bone. */
+  /** Four numbers (x, y, z, w) per bone: rotation relative to rest, about the bone's head. */
   rotations: Float32Array;
   /** Root offset in voxels. */
   root: Vec3;
 }
 
+/** A pose with every bone at rest (identity rotations, no root offset). */
 export function restPose(boneCount: number): Pose {
   const rotations = new Float32Array(boneCount * 4);
   for (let i = 0; i < boneCount; i++) rotations[i * 4 + 3] = 1;
@@ -42,6 +44,13 @@ export function clipTime(clip: Clip, t: number): number {
   return Math.max(0, Math.min(clip.duration, t));
 }
 
+/**
+ * Sample a clip at time `t` seconds (wrapped for looping clips, clamped otherwise), slerping
+ * between keys. Bones without a track stay at rest. Clips are authored at 12 fps; sampling at
+ * whole frames (`frame / 12`) is what lets baked poses be cached.
+ *
+ * @param out - Pose to write into, to avoid allocating; it is overwritten and returned.
+ */
 export function sampleClip(clip: Clip, t: number, boneCount: number, out = restPose(boneCount)): Pose {
   const tt = clipTime(clip, t);
   out.rotations.fill(0);

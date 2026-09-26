@@ -6,8 +6,10 @@ export type Vec3 = [number, number, number];
 /** x, y, z, w. */
 export type Quat = [number, number, number, number];
 
+/** The identity rotation. Shared: do not mutate it. */
 export const IDENTITY_Q: Quat = [0, 0, 0, 1];
 
+/** Rotation of `rad` radians about `axis` (need not be unit length). */
 export function quatAxisAngle(axis: Vec3, rad: number): Quat {
   const l = Math.hypot(axis[0], axis[1], axis[2]) || 1;
   const s = Math.sin(rad / 2) / l;
@@ -74,6 +76,7 @@ export function invertRigid(m: ArrayLike<number>, mi: number, out: Float32Array,
   out[o + 8] = r02; out[o + 9] = r12; out[o + 10] = r22; out[o + 11] = -(r02 * tx + r12 * ty + r22 * tz);
 }
 
+/** Apply the 3x4 affine at `m[mi]` to a point; writes into and returns `out`. */
 export function transformPoint(m: ArrayLike<number>, mi: number, x: number, y: number, z: number, out: Vec3): Vec3 {
   out[0] = m[mi] * x + m[mi + 1] * y + m[mi + 2] * z + m[mi + 3];
   out[1] = m[mi + 4] * x + m[mi + 5] * y + m[mi + 6] * z + m[mi + 7];

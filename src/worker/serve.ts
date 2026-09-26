@@ -44,10 +44,7 @@ function transferables(entity: Entity): Transferable[] {
   return out;
 }
 
-/**
- * Serve generate requests on this worker until it is terminated. Call after
- * registering the generators this worker should offer.
- */
+/** Options for {@link serveGenerators}. */
 export interface ServeOptions {
   /** The worker global (default `self`). */
   scope?: WorkerScope;
@@ -59,6 +56,27 @@ export interface ServeOptions {
   cache?: string;
 }
 
+/**
+ * Serve generate requests on this worker until it is terminated. Call after
+ * registering the generators this worker should offer: the pool sends a generator id, and a
+ * function cannot cross the worker boundary, so the registry must be filled here. Posts a
+ * `ready` message listing the registered ids, then answers each request with the entity (its
+ * buffers transferred) or an error.
+ *
+ * With `cache`, models are kept in IndexedDB keyed by generator id and version, seed, params
+ * and context, salted with this worker's URL, so a production build (which hashes the URL)
+ * never serves a model made by older generator code.
+ *
+ * @param opts - Options, or the worker scope itself (the older form).
+ * @example
+ * ```ts
+ * // gen.worker.ts
+ * import { registerTreeGenerators } from "@voxolith/gen-tree";
+ * import { serveGenerators } from "@voxolith/engine/worker";
+ * registerTreeGenerators();
+ * serveGenerators({ cache: import.meta.env.DEV ? undefined : "voxolith-models" });
+ * ```
+ */
 export function serveGenerators(opts: ServeOptions | WorkerScope = {}): void {
   const o: ServeOptions = "postMessage" in opts ? { scope: opts as WorkerScope } : (opts as ServeOptions);
   const scope = o.scope ?? (self as unknown as WorkerScope);

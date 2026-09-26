@@ -16,6 +16,7 @@
 import type { EntityModel, Rig } from "../entity";
 import { invertRigid, mulAffine, transformPoint, type Vec3 } from "./math";
 
+/** Options for {@link bakePose}. */
 export interface BakeOptions {
   /** Turn about the vertical axis through the anchor, radians. */
   yaw?: number;
@@ -93,6 +94,28 @@ function boneBounds(model: EntityModel, boneCount: number): BoneBounds {
   return b;
 }
 
+/**
+ * Bake a posed voxel model from a rigged rest model and bone matrices. Each posed cell is
+ * inverse-mapped to rest space through its bone, so rotated limbs stay solid; a final pass closes
+ * the cracks on the outside of bending joints. `yaw` turns the result about the anchor at any
+ * angle, which resamples (scenery sticks to 90-degree orientations for exactness).
+ *
+ * The result is a new dense model cropped to the posed voxels, with `bones` and an anchor that
+ * sits at the same point as the rest anchor. Cost grows with each bone's posed bounding box, so
+ * bake once per pose and cache (see {@link makePoseCache}, {@link makeCrowd}).
+ *
+ * @param model - The rest model; it must carry `bones`. Pass a wounded or severed rest model to
+ *   pose damage.
+ * @param rig - The entity's rig.
+ * @param matrices - Bone matrices from `poseMatrices`, 12 floats per bone.
+ * @returns The posed model.
+ * @example
+ * ```ts
+ * const pose = sampleClip(walk, anim.time(), rig.bones.length);
+ * const posed = bakePose(rat.model, rig, poseMatrices(rig, pose), { yaw: Math.PI / 4 });
+ * stamper.put(1, toSprite(posed), { x, y, z }, ratBase);
+ * ```
+ */
 export function bakePose(model: EntityModel, rig: Rig, matrices: Float32Array, opts: BakeOptions = {}): EntityModel {
   if (!model.bones) throw new Error("bakePose needs a rigged model (model.bones)");
   const n = rig.bones.length;

@@ -14,6 +14,7 @@
 
 import { seededRandom } from "@voxolith/renderer/core";
 
+/** Options for {@link scatterRegion}. */
 export interface ScatterOptions {
   /** Cell size in world voxels. One candidate per cell, so this sets density. */
   cell: number;
@@ -29,7 +30,9 @@ export interface ScatterOptions {
   jitter?: number;
 }
 
+/** One candidate position from {@link scatterRegion}. */
 export interface ScatterPoint {
+  /** Position in whole world voxels. */
   x: number;
   z: number;
   /** Cell coordinates, useful as a stable id. */
@@ -59,6 +62,21 @@ function cellSeed(seed: number, salt: number, cx: number, cz: number): number {
  * Expand the rectangle by the largest thing a candidate can produce before
  * calling this, or entities rooted just outside a chunk will not be drawn
  * where they reach into it.
+ *
+ * Every cell yields one candidate, so thin the layer by drawing from `p.rng` in `visit`. The same
+ * options always give the same points, in any order of calls.
+ *
+ * @param x0 - With `z0`, `x1`, `z1`: the rectangle in world voxels, inclusive.
+ * @param visit - Called once per candidate, row by row.
+ * @example
+ * ```ts
+ * const m = 24; // the widest canopy, so trees rooted next door are drawn here too
+ * scatterRegion({ cell: 40, seed, salt: 7 }, box.x0 - m, box.z0 - m, box.x1 + m, box.z1 + m, (pt) => {
+ *   if (pt.rng() > 0.6) return;
+ *   const variant = trees[Math.floor(pt.rng() * trees.length)];
+ *   ctx.blit(variant.model, { x: pt.x, y: heightAt(pt.x, pt.z) + 1, z: pt.z }, treeBase);
+ * });
+ * ```
  */
 export function scatterRegion(
   opts: ScatterOptions,

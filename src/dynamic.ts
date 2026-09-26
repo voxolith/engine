@@ -49,6 +49,7 @@ export function toSprite(model: EntityModel, opts: { surfaceOnly?: boolean } = {
   return { size: model.size, anchor: [...model.anchor] as [number, number, number], cells: Int32Array.from(cells), values: Uint8Array.from(values) };
 }
 
+/** What one {@link BrickStamper.commit} did. */
 export interface StampStats {
   /** Bricks edited this commit. */
   bricks: number;
@@ -58,12 +59,14 @@ export interface StampStats {
   movers: number;
 }
 
+/** Moving voxel models stamped into a brick world, from {@link makeBrickStamper}. */
 export interface BrickStamper {
   /**
    * Place mover `id` (or move it). `base` maps role v to palette slot base + v - 1.
    * Nothing changes in the world until `commit`.
    */
   put(id: number, sprite: Sprite, origin: { x: number; y: number; z: number }, base: number): void;
+  /** Take mover `id` out, restoring what it covered, on the next `commit`. */
   remove(id: number): void;
   /** Restore what changed movers covered, write them at their new places. */
   commit(): StampStats;
@@ -85,6 +88,30 @@ interface Placement {
   bricks: Map<number, number[]>;
 }
 
+/**
+ * Stamp moving things (creatures, thrown limbs, projectiles) into the same brick grid as the
+ * scenery, with no dense copy of the world. Per brick it keeps exactly the cells its movers
+ * overwrote and what they held; each `commit` restores those and writes the movers at their new
+ * places in one batched edit, touching only bricks whose movers changed.
+ *
+ * Origins are rounded to whole voxels (the sprite's anchor lands on `origin`), and a mover stays
+ * where it is until it is put again or removed. Cells under a mover are restored to what they
+ * held when it arrived, so an edit made underneath a mover is lost when it leaves. Movers share
+ * the world's 8-bit palette: `base` is a slot from the world's {@link PaletteAllocator}. For many
+ * animated movers use `makeCrowd` (`@voxolith/engine/animation`); to draw without touching the
+ * world, {@link makeInstanceLayer}.
+ *
+ * @param target - The renderer, or anything with `edit` (and ideally `editMany`).
+ * @param opts - `size` clips writes to the world's extent, in voxels.
+ * @returns The stamper.
+ * @example
+ * ```ts
+ * const stamper = makeBrickStamper(renderer, { size: SIZE });
+ * const sprite = toSprite(bakePose(rat.model, rat.rig!, poseMatrices(rat.rig!, anim.pose())));
+ * stamper.put(1, sprite, { x: 120.4, y: 9, z: 88 }, ratBase);
+ * stamper.commit();
+ * ```
+ */
 export function makeBrickStamper(
   target: MultiBrickTarget,
   opts: { size?: { x: number; y: number; z: number } } = {},

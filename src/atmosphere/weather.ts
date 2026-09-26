@@ -17,19 +17,25 @@ import type { Lighting } from "./timeofday";
 
 type Vec3 = [number, number, number];
 
+/** What falls from the sky. */
 export type PrecipitationKind = "none" | "rain" | "snow";
 
+/**
+ * A description of the sky and the ground's weather state, all in 0..1 unless stated. Plain
+ * data: blend it, store it, send it. Presets are in {@link ATMOSPHERES}.
+ */
 export interface Atmosphere {
   /** 0 clear .. 1 overcast. */
   cloud: number;
+  /** Kind and 0..1 intensity; intensity is ignored for "none". */
   precipitation: { kind: PrecipitationKind; intensity: number };
   /** Direction the wind blows towards, degrees (0 = +Z, 90 = +X); strength 0..1. */
   wind: { direction: number; strength: number };
   /** 0 .. 1: mist on top of whatever the precipitation brings. */
   fog: number;
-  /** 0 .. 1: how wet the ground is. */
+  /** 0 .. 1: how wet the ground is. Ground state, accumulated by the game (see {@link approach}). */
   wetness: number;
-  /** 0 .. 1: how much snow has settled. */
+  /** 0 .. 1: how much snow has settled. Ground state, like `wetness`. */
   cover: number;
 }
 
@@ -43,6 +49,11 @@ const base = (o: Partial<Atmosphere>): Atmosphere => ({
   ...o,
 });
 
+/**
+ * Named presets: clear, cloudy, overcast, rain, storm, snow, blizzard, fog. Ground state
+ * (`wetness`, `cover`) is 0 in all of them; spread your own accumulators over a preset. Shared
+ * objects: copy before changing.
+ */
 export const ATMOSPHERES = {
   clear: base({}),
   cloudy: base({ cloud: 0.45, wind: { direction: 60, strength: 0.3 } }),
@@ -54,6 +65,7 @@ export const ATMOSPHERES = {
   fog: base({ cloud: 0.5, fog: 0.8, wind: { direction: 60, strength: 0.05 } }),
 } satisfies Record<string, Atmosphere>;
 
+/** A preset name in {@link ATMOSPHERES}. */
 export type AtmosphereName = keyof typeof ATMOSPHERES;
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -84,14 +96,38 @@ export function blendAtmosphere(a: Atmosphere, b: Atmosphere, t: number): Atmosp
   };
 }
 
+/** An eased change between atmospheres, from {@link makeAtmosphereTransition}. */
 export interface AtmosphereTransition {
-  /** Move to `target` over `seconds` (eased), starting from wherever it is now. */
+  /**
+   * Move to `target` over `seconds` (eased; default 4, 0 is immediate), starting from wherever
+   * it is now, so a change mid-transition does not jump.
+   */
   set(target: Atmosphere, seconds?: number): void;
+  /** Advance by `dt` seconds and return the current atmosphere. */
   update(dt: number): Atmosphere;
   current(): Atmosphere;
+  /** A transition is under way; render continuously while it is. */
   changing(): boolean;
 }
 
+/**
+ * Change weather smoothly. The game decides when to call `set`; the transition only blends (see
+ * {@link blendAtmosphere}: a change of precipitation kind fades one out before the other fades in,
+ * and wind turns the short way round).
+ *
+ * @param start - Default {@link ATMOSPHERES}.clear.
+ * @returns The transition; call `update(dt)` once per frame.
+ * @example
+ * ```ts
+ * const weather = makeAtmosphereTransition(ATMOSPHERES.clear);
+ * weather.set(ATMOSPHERES.rain, 6);
+ * // per frame:
+ * const sky = weather.update(dt);
+ * wetness = approach(wetness, sky.precipitation.kind === "rain" ? 1 : 0, 0.1, dt);
+ * renderer.render({ ...frame(), ...atmosphereFrame(timeOfDay(phase), { ...sky, wetness }), time });
+ * loop.setContinuous(weather.changing() || sky.precipitation.intensity > 0);
+ * ```
+ */
 export function makeAtmosphereTransition(start: Atmosphere = ATMOSPHERES.clear): AtmosphereTransition {
   let from = start, to = start, t = 1, dur = 1;
   const ease = (x: number) => x * x * (3 - 2 * x);
@@ -118,12 +154,13 @@ export function approach(value: number, target: number, rate: number, dt: number
   return value < target ? Math.min(target, value + step) : Math.max(target, value - step);
 }
 
+/** Options for {@link atmosphereFrame}. */
 export interface AtmosphereFrameOptions {
   /** Snow colour on the ground. */
   coverColor?: Vec3;
   /** Rain fall speed, voxels per second. Default 70. */
   rainSpeed?: number;
-  /** Snow fall speed. Default 8. */
+  /** Snow fall speed, voxels per second. Default 8. */
   snowSpeed?: number;
   /**
    * The world's scale (default 10, the scale everything above is tuned for).
@@ -140,6 +177,18 @@ export interface AtmosphereFrameOptions {
  * fog takes the horizon's colour, wind tilts the rain and snow and drives the
  * clouds and the water. With a clear atmosphere the lighting passes through
  * unchanged.
+ *
+ * Fog, clouds, precipitation and the ground surface are only set when non-zero, so the renderer
+ * skips what is off. Water animates from `FrameParams.time`, which this does not set.
+ *
+ * @param lighting - Usually {@link timeOfDay}'s result.
+ * @param atm - The sky, with the game's own `wetness` and `cover`.
+ * @returns Lighting plus the renderer's atmosphere fields, to spread into `renderer.render`.
+ * @example
+ * ```ts
+ * const sky = atmosphereFrame(timeOfDay(0.45), ATMOSPHERES.rain, { voxelsPerMetre: 100 });
+ * renderer.render({ ...frame(), ...sky, time: now / 1000 });
+ * ```
  */
 export function atmosphereFrame(lighting: Lighting, atm: Atmosphere, opts: AtmosphereFrameOptions = {}): Lighting & AtmosphereParams {
   const day = clamp01(lighting.sunIntensity);

@@ -29,6 +29,7 @@ export interface Lighting {
   moonIntensity: number;
 }
 
+/** Options for {@link timeOfDay}. */
 export interface TimeOfDayOptions {
   /** How dark the night is, 0 (pitch black ambient) .. 1 (as bright as day). Default 0.12. */
   nightAmbient?: number;
@@ -51,6 +52,20 @@ const norm = (v: Vec3): Vec3 => {
 /** Keep a light direction at least `minY` above the horizon. */
 const lift = (v: Vec3, minY: number): Vec3 => norm([v[0], Math.max(v[1], minY), v[2]]);
 
+/**
+ * Every lighting field of the renderer's `FrameParams` for a time of day: key light, ambient,
+ * sun and moon discs, sky colours. By day the key light follows the sun; at night it is a dim
+ * blue moonlight and the ambient drops low enough for point lights to carry the scene. The moon
+ * disc lights nothing; the key light does.
+ *
+ * @param phase - 0..1 over a day (wrapped): 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset.
+ *   Animate it to animate the sky.
+ * @returns The lighting, to spread into `renderer.render` or pass to {@link atmosphereFrame}.
+ * @example
+ * ```ts
+ * renderer.render({ ...frame(), ...timeOfDay(0.42) });
+ * ```
+ */
 export function timeOfDay(phase: number, opts: TimeOfDayOptions = {}): Lighting {
   const p = ((phase % 1) + 1) % 1;
   const a = (p - 0.25) * Math.PI * 2;

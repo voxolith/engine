@@ -16,6 +16,7 @@ import type { EntityModel, Size, Vec3 } from "./entity";
 /** Low two bits are the yaw step (×90°); bit 2 mirrors along x first. */
 export type Orientation = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
+/** All eight orientations, for picking one at random or iterating. */
 export const ORIENTATIONS: readonly Orientation[] = [0, 1, 2, 3, 4, 5, 6, 7];
 
 /** Does this orientation swap the x and z extents? */

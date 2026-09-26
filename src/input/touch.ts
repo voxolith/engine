@@ -14,6 +14,10 @@
 
 import type { Device, Input } from "./core";
 
+/**
+ * A floating joystick. It sets virtual values `<id>` (1 while held) and `<id>.x`, `<id>.y`
+ * (-1..1, Y down-positive), read as `touch:<id>.x` and so on in an action map.
+ */
 export interface JoystickSpec {
   id: string;
   /** Which part of the screen the thumb can land in. */
@@ -22,7 +26,9 @@ export interface JoystickSpec {
   radius?: number;
 }
 
+/** A round button. It sets virtual value `<id>` to 1 while any finger is on it (`touch:<id>`). */
 export interface ButtonSpec {
+  /** Virtual channel name; also the button's accessible label. */
   id: string;
   /** Short text or a symbol. */
   label: string;
@@ -32,6 +38,7 @@ export interface ButtonSpec {
   size?: number;
 }
 
+/** What {@link makeTouchControls} puts on screen. */
 export interface TouchControlsSpec {
   joysticks?: JoystickSpec[];
   /** Laid out bottom-up, innermost first, on their side. */
@@ -42,9 +49,12 @@ export interface TouchControlsSpec {
   container?: HTMLElement;
 }
 
+/** The on-screen controls, from {@link makeTouchControls}. */
 export interface TouchControls {
+  /** Show or hide the overlay. In "auto" mode the next device change can override this. */
   setVisible(on: boolean): void;
   visible(): boolean;
+  /** Remove the overlay and its listeners and zero every virtual value it set. */
   dispose(): void;
 }
 
@@ -52,6 +62,30 @@ const VAR_BG = "var(--vx-control-bg, rgba(20, 24, 36, 0.35))";
 const VAR_FG = "var(--vx-control-fg, rgba(255, 255, 255, 0.85))";
 const VAR_ACTIVE = "var(--vx-control-active, rgba(255, 255, 255, 0.35))";
 
+/**
+ * Add on-screen joysticks and buttons that feed the input's virtual channel, so a game binds
+ * `touch:move.x` beside `key:KeyA` and `pad:LeftX`. The controls are a fixed overlay of their own
+ * elements, so fingers on them never reach the canvas gestures. DOM-only.
+ *
+ * Joysticks take the lower part of their side of the screen and centre on wherever the thumb
+ * lands. Buttons stack bottom-up in two columns from the outer edge. Colours come from the CSS
+ * custom properties `--vx-control-bg`, `--vx-control-fg` and `--vx-control-active`.
+ *
+ * @param input - The surface's input.
+ * @param spec - The controls to create and when to show them.
+ * @returns A handle to show, hide or remove them.
+ * @example
+ * ```ts
+ * makeTouchControls(input, {
+ *   joysticks: [{ id: "move", side: "left" }],
+ *   buttons: [{ id: "jump", label: "A" }],
+ * });
+ * const actions = makeActions(input, {
+ *   strafe: axis({ negative: ["key:KeyA"], positive: ["key:KeyD"], analog: ["touch:move.x"] }),
+ *   jump: button("key:Space", "touch:jump"),
+ * });
+ * ```
+ */
 export function makeTouchControls(input: Input, spec: TouchControlsSpec): TouchControls {
   const doc = document;
   const root = doc.createElement("div");

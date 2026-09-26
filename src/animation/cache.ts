@@ -6,6 +6,7 @@
 // caller (variant, clip, frame, yaw bucket, damage), least-recently-used out
 // when the byte budget is exceeded.
 
+/** A least-recently-used cache under a byte budget, from {@link makePoseCache}. */
 export interface PoseCache<T> {
   /** The cached value for `key`, made (and counted as a miss) if absent. */
   get(key: string, make: () => T): T;
@@ -13,10 +14,20 @@ export interface PoseCache<T> {
   peek(key: string): T | undefined;
   /** Drop everything whose key starts with `prefix` (e.g. one damaged creature). */
   drop(prefix: string): void;
+  /** Entries, estimated bytes held, and hits and misses since the last `resetStats`. */
   stats(): { entries: number; bytes: number; hits: number; misses: number };
+  /** Zero the hit and miss counters. */
   resetStats(): void;
 }
 
+/**
+ * Make a cache for baked poses (or anything else keyed by string). When the estimated size goes
+ * over `maxBytes` (default 48 MiB) the least recently used entries are evicted. {@link makeCrowd}
+ * makes one itself; make your own to share poses between crowds or to cache poses you bake by
+ * hand.
+ *
+ * @param sizeOf - Estimated bytes of a value, counted against `maxBytes`.
+ */
 export function makePoseCache<T>(sizeOf: (value: T) => number, opts: { maxBytes?: number; /** Called for each value evicted or dropped (free what it holds). */ onEvict?: (key: string, value: T) => void } = {}): PoseCache<T> {
   const max = opts.maxBytes ?? 48 * 1024 * 1024;
   const evict = opts.onEvict;

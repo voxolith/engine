@@ -18,11 +18,17 @@
 import type { Input, PadAxis, PadButton } from "./core";
 import { PAD_AXES, PAD_BUTTONS } from "./core";
 
+/** A button action: held when any source is; its value is the strongest source, 0..1. */
 export interface ButtonBinding {
   kind: "button";
+  /** Source strings such as `key:Space`, `pad:A`, `touch:jump`. */
   sources: string[];
 }
 
+/**
+ * An axis action, -1..1. The digital result is (strongest positive) minus (strongest negative);
+ * the strongest analog source wins over it when pushed harder.
+ */
 export interface AxisBinding {
   kind: "axis";
   /** Digital or half-axis sources that push towards -1. */
@@ -33,22 +39,32 @@ export interface AxisBinding {
   analog?: string[];
 }
 
+/** How one action reads its sources. Plain JSON, so bindings can be saved and restored. */
 export type Binding = ButtonBinding | AxisBinding;
+/** An action map: action name to binding. */
 export type Bindings = Record<string, Binding>;
 
+/** Shorthand for a {@link ButtonBinding}: `button("key:Space", "pad:A", "touch:jump")`. */
 export const button = (...sources: string[]): ButtonBinding => ({ kind: "button", sources });
+/** Shorthand for an {@link AxisBinding}: `axis({ negative: ["key:KeyA"], positive: ["key:KeyD"], analog: ["pad:LeftX"] })`. */
 export const axis = (b: Omit<AxisBinding, "kind">): AxisBinding => ({ kind: "axis", ...b });
 
+/**
+ * Named game controls over an input, from {@link makeActions}. Values are read live from the
+ * input; edges (`pressed`, `released`) follow its `update()`.
+ */
 export interface Actions<B extends Bindings = Bindings> {
   /** Held (a button), or pushed past half-way (an axis, either direction). */
   down(name: keyof B & string): boolean;
   /** Went down / up since the previous `input.update()`. */
   pressed(name: keyof B & string): boolean;
+  /** A source went up since the previous `input.update()` and the action is no longer down. */
   released(name: keyof B & string): boolean;
   /** -1..1 for axes, 0..1 for buttons. */
   value(name: keyof B & string): number;
   /** Two axes as a vector, clamped to the unit circle so diagonals are not faster. */
   vector(x: keyof B & string, y: keyof B & string): [number, number];
+  /** Replace one action's binding (the binding is copied). */
   bind(name: keyof B & string, binding: Binding): void;
   /** The current bindings as plain JSON, for saving a player's rebinding. */
   bindings(): B;
@@ -61,6 +77,31 @@ export interface Actions<B extends Bindings = Bindings> {
 const isButton = (s: string): s is PadButton => (PAD_BUTTONS as readonly string[]).includes(s);
 const isAxis = (s: string): s is PadAxis => (PAD_AXES as readonly string[]).includes(s);
 
+/**
+ * Bind named actions to keys, gamepad and on-screen controls. Sources are strings:
+ * `key:<KeyboardEvent.code>`, `pad:<PadButton>` (0..1), `pad:<PadAxis>` (-1..1),
+ * `touch:<id>` (a {@link makeTouchControls} control; a joystick adds `<id>.x` and `<id>.y`), and a
+ * trailing `+` or `-` for one half of a signed source. Screen and pad Y are down-positive, so
+ * "stick pushed up" is `pad:LeftY-`.
+ *
+ * Every bound key has its default action prevented, so bound keys do not scroll the page.
+ *
+ * @param input - The surface's input. Call `input.update()` once per frame before reading.
+ * @param defaults - The action map; it is copied, and `bindings()` returns the current one.
+ * @returns The actions, typed by the names in `defaults`.
+ * @example
+ * ```ts
+ * const actions = makeActions(input, {
+ *   strafe: axis({ negative: ["key:KeyA"], positive: ["key:KeyD"], analog: ["pad:LeftX", "touch:move.x"] }),
+ *   // Up is negative on a stick, so each half goes to the opposite side.
+ *   walk: axis({ negative: ["key:KeyS", "pad:LeftY+", "touch:move.y+"], positive: ["key:KeyW", "pad:LeftY-", "touch:move.y-"] }),
+ *   jump: button("key:Space", "pad:A", "touch:jump"),
+ * });
+ * // per frame, after input.update():
+ * const [x, z] = actions.vector("strafe", "walk");
+ * if (actions.pressed("jump")) jump();
+ * ```
+ */
 export function makeActions<B extends Bindings>(input: Input, defaults: B): Actions<B> {
   const map: Bindings = structuredClone(defaults);
   // Keep bound keys from scrolling the page or moving the caret.

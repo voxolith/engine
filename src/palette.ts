@@ -11,12 +11,34 @@ import { orientAnchor, orientVoxel, type Orientation } from "./orient";
 
 const MATERIAL_KIND = { diffuse: 0, metal: 1, glass: 2, emit: 3, water: 4 } as const;
 
+/** A slot range from {@link PaletteAllocator.allocate}. */
 export interface Allocation {
   /** Voxel value of the entity's first role. */
   base: number;
+  /** Slots reserved: one per role. */
   count: number;
 }
 
+/**
+ * Shares the world's 256-slot palette between the entities stamped into it. Each entity (or each
+ * key, for entities that look alike) gets a contiguous range, and role `r` of an entity placed at
+ * `base` becomes world voxel value `base + r - 1`. Build the renderer's palette and material block
+ * from it once everything is allocated; recolouring a range later restyles every copy.
+ *
+ * Only for what is stamped into the world. Instanced models get palettes of their own
+ * (`InstanceLayer.palettes`) and need no slots here. Ranges are never freed.
+ *
+ * @example
+ * ```ts
+ * const palette = new PaletteAllocator(1);
+ * const { base: groundBase } = palette.allocate(terrain.roles, "terrain");
+ * const { base: oakBase } = palette.allocateFor(oak);
+ * const renderer = await createRenderer(gpu, {
+ *   size: SIZE, palette: palette.buildPalette(), materials: palette.buildMaterials(),
+ * });
+ * blitModelToBricks(renderer, oak.model, { x: 40, y: 12, z: 40 }, oakBase);
+ * ```
+ */
 export class PaletteAllocator {
   private next: number;
   private readonly capacity: number;
@@ -35,10 +57,12 @@ export class PaletteAllocator {
     this.slots = new Array(this.capacity).fill(null);
   }
 
+  /** Slots handed out so far, counting any reserved below `firstSlot`. */
   get used(): number {
     return this.next - 1;
   }
 
+  /** Slots still available. */
   get free(): number {
     return this.capacity - this.next;
   }
@@ -46,6 +70,8 @@ export class PaletteAllocator {
   /**
    * Reserve a range for these roles. `key` deduplicates: two entities from the
    * same generator and style share one range instead of burning the palette.
+   *
+   * @throws When the roles do not fit in the slots left.
    */
   allocate(roles: Role[], key?: string): Allocation {
     if (key !== undefined) {
@@ -149,7 +175,23 @@ function writeMaterial(m: Float32Array, slot: number, h: MaterialHint): void {
   m[o + 7] = h.spec ?? 0;
 }
 
-/** Copy a model into a world grid at `origin`, offsetting roles by `base - 1`. */
+/**
+ * Copy a model into a dense world grid at `origin`, offsetting roles by `base - 1`. The model's
+ * anchor (after orientation) lands on `origin`, rounded to whole voxels; voxels outside the world
+ * are dropped. Dense models only. For a world held by the renderer (no dense copy), use
+ * {@link blitModelToBricks}.
+ *
+ * @param base - The entity's palette range start, from {@link PaletteAllocator.allocate}.
+ * @param orientation - One of the eight axis-aligned orientations; exact, no resampling.
+ * @returns The world-voxel box written, for `renderer.edit` or an occupancy update, or null if
+ *   nothing landed in the world.
+ * @example
+ * ```ts
+ * const world = { size: SIZE, data: new Uint8Array(SIZE.x * SIZE.y * SIZE.z) };
+ * const { base } = palette.allocateFor(tree);
+ * blitModel(world, tree.model, { x: 48, y: 1, z: 48 }, base, 2);
+ * ```
+ */
 export function blitModel(
   world: { size: { x: number; y: number; z: number }; data: Uint8Array },
   model: EntityModel,

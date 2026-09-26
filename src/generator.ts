@@ -15,20 +15,39 @@ export type ParamSpec =
   | { path: string; label: string; kind: "bool"; group?: string; help?: string }
   | { path: string; label: string; kind: "enum"; options: readonly string[]; group?: string; help?: string };
 
+/**
+ * A pluggable entity generator: the contract every generator package implements and
+ * `generators/contract` checks. `generate` must be pure and deterministic, taking all randomness
+ * from `rng` (never `Math.random`) and never mutating `params`, so the same parameters and seed
+ * always give the same entity.
+ *
+ * @typeParam P - The parameter object. Parameters are in 10 voxels per metre.
+ */
 export interface EntityGenerator<P> {
   /** Namespaced and stable, e.g. "voxolith/tree.broadleaf". */
   id: string;
+  /** Human-readable name for a UI. */
   name: string;
   /** Bump when output changes for the same input, so caches can be invalidated. */
   version: string;
   description?: string;
   /** Every role the generator can emit, in voxel-value order. */
   roles: Role[];
+  /**
+   * Default parameters. Every value a `params` spec covers must lie within it and on its step
+   * grid, or a share code of the defaults rebuilds a different model.
+   */
   defaults: P;
+  /**
+   * The tunable parameters, in a fixed order. This list is what share codes carry: adding,
+   * removing or reordering entries invalidates old codes, and changing a `step` silently changes
+   * what they decode to.
+   */
   params: ParamSpec[];
   /**
-   * `ctx` is optional and every field of it has a default, so a call without
-   * it gives exactly the model it always did.
+   * Build one entity. `ctx` is optional and every field of it has a default, so a call without
+   * it gives exactly the model it always did; a context at the native scale must give the
+   * byte-identical model.
    */
   generate(params: P, rng: () => number, ctx?: GenerateContext): Entity;
   /**
@@ -70,15 +89,30 @@ export function refinement(ctx?: GenerateContext, native = DEFAULT_VOXELS_PER_ME
 
 const registry = new Map<string, EntityGenerator<never>>();
 
+/**
+ * Add a generator to the process-wide registry that {@link getGenerator}, share codes and
+ * `serveGenerators` look ids up in. Generator packages wrap this in their own `register...()`
+ * function. A worker has its own registry, so register there too.
+ *
+ * @throws If a generator with the same id is already registered.
+ * @example
+ * ```ts
+ * registerGenerator(broadleafGenerator);
+ * const gen = getGenerator<TreeParams>("voxolith/tree.broadleaf")!;
+ * const tree = gen.generate(gen.defaults, seededRandom(42));
+ * ```
+ */
 export function registerGenerator<P>(gen: EntityGenerator<P>): void {
   if (registry.has(gen.id)) throw new Error(`Generator "${gen.id}" is already registered`);
   registry.set(gen.id, gen as unknown as EntityGenerator<never>);
 }
 
+/** The registered generator with this id, if any. `P` is asserted, not checked. */
 export function getGenerator<P = unknown>(id: string): EntityGenerator<P> | undefined {
   return registry.get(id) as unknown as EntityGenerator<P> | undefined;
 }
 
+/** Every registered generator, in registration order. */
 export function listGenerators(): EntityGenerator<unknown>[] {
   return [...registry.values()] as unknown as EntityGenerator<unknown>[];
 }

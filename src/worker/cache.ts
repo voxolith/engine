@@ -13,8 +13,14 @@
 
 import type { Entity, EntityModel } from "../entity";
 
+/**
+ * Generated models kept in IndexedDB, from {@link openModelCache}. Both methods swallow storage
+ * errors: a failed `get` is a miss and a failed `put` simply keeps nothing.
+ */
 export interface ModelCache {
+  /** The entity stored under `key`, as fresh arrays, or undefined. */
   get(key: string): Promise<Entity | undefined>;
+  /** Store a packed, deflated copy. It copies before its first await, so the caller may transfer the entity's buffers straight after calling. */
   put(key: string, entity: Entity): Promise<void>;
 }
 
@@ -97,6 +103,7 @@ export function packEntity(entity: Entity): { head: Record<string, unknown>; byt
   return { head: { entity: { ...entity, model }, sections }, bytes };
 }
 
+/** Rebuild an entity from {@link packEntity}'s output. Every array is copied out of `bytes`. */
 export function unpackEntity(head: Record<string, unknown>, bytes: Uint8Array): Entity {
   const sections = head.sections as Section[];
   const view = (s: Section) => (s.kind === "u32" ? new Uint32Array(bytes.buffer, bytes.byteOffset + s.offset, s.length) : new Uint8Array(bytes.buffer, bytes.byteOffset + s.offset, s.length));

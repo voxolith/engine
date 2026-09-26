@@ -14,13 +14,16 @@
 import type { Entity } from "./entity";
 import { ORIENTATIONS, type Orientation } from "./orient";
 
+/** A model picked from a {@link VariantPool}, with the orientation to place it in. */
 export interface Variant {
   entity: Entity;
+  /** Pass to `blitModel` or `orientationYaw`. */
   orientation: Orientation;
   /** Which pool slot this came from, for debugging and stats. */
   index: number;
 }
 
+/** A few models of one kind, placed many times, from {@link makeVariantPool}. */
 export interface VariantPool {
   /** A model from the pool with a random orientation. Generates on first use. */
   pick(rng: () => number): Variant;
@@ -32,6 +35,7 @@ export interface VariantPool {
   readonly size: number;
 }
 
+/** Options for {@link makeVariantPool}. */
 export interface VariantPoolOptions {
   /**
    * Distinct models to generate. Each is placed in any of 8 orientations, so

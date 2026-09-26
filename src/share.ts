@@ -19,6 +19,7 @@ import { getGenerator, getParam, withParam, type EntityGenerator, type GenerateC
 import type { Entity } from "./entity";
 import { seededRandom } from "@voxolith/renderer/core";
 
+/** A complete, rebuildable description of one generated model: what a share code carries. */
 export interface GeneratorState<P = unknown> {
   /** `EntityGenerator.id`. */
   generator: string;
@@ -26,6 +27,7 @@ export interface GeneratorState<P = unknown> {
   version: string;
   /** Seeds the rng, so the same state rebuilds the same model. */
   seed: number;
+  /** The generator's defaults with the declared (`EntityGenerator.params`) values applied. */
   params: P;
 }
 
@@ -223,7 +225,19 @@ function schemaHash(specs: ParamSpec[]): number {
 
 // --- public API -------------------------------------------------------------
 
-/** Pack a generator, its parameters and a seed into a shareable code. */
+/**
+ * Pack a generator, its parameters and a seed into a shareable code: URL-safe base64, typically
+ * a few dozen characters. Only the declared `params` travel, each clamped and snapped to its
+ * spec, so a value off the step grid decodes to the nearest step.
+ *
+ * @param state - The seed (as an unsigned 32-bit integer) and the parameters.
+ * @returns The code; {@link decodeState} turns it back into the state.
+ * @example
+ * ```ts
+ * const code = encodeState(broadleafGenerator, { seed: 42, params: broadleafGenerator.defaults });
+ * const tree = generateFromState(decodeState(code));
+ * ```
+ */
 export function encodeState<P>(gen: EntityGenerator<P>, state: Omit<GeneratorState<P>, "generator" | "version">): string {
   const w = new Writer();
   w.u8(MAGIC);
@@ -240,6 +254,14 @@ export function encodeState<P>(gen: EntityGenerator<P>, state: Omit<GeneratorSta
 /**
  * Unpack a code. The generator must be registered, since decoding starts from
  * its defaults and only the declared parameters travel in the code.
+ *
+ * @throws On a malformed code, an unregistered generator, or a code made with a different
+ *   parameter layout (it is refused rather than rebuilt into a different model).
+ * @example
+ * ```ts
+ * const state = decodeState<TreeParams>(new URLSearchParams(location.search).get("tree")!);
+ * const tree = generateFromState(state, "shared-tree");
+ * ```
  */
 export function decodeState<P = unknown>(code: string): GeneratorState<P> {
   const r = new Reader(fromBase64Url(code.trim()));

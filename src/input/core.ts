@@ -18,15 +18,23 @@
 //
 //   loop.setContinuous(game.animating() || input.active())
 
+/** The kind of pointer, from `PointerEvent.pointerType`; anything unrecognised counts as mouse. */
 export type PointerKind = "mouse" | "touch" | "pen";
+/** What the player used last (`Input.lastDevice`), for choosing prompts and touch controls. */
 export type Device = PointerKind | "keyboard" | "gamepad";
 
+/**
+ * A pointer that is down on the surface, as tracked by {@link Input}. The object is shared by
+ * every listener on the input and updated in place, so copy what you need to keep.
+ */
 export interface PointerState {
+  /** `PointerEvent.pointerId`. */
   id: number;
   type: PointerKind;
   /** Current position, client pixels. */
   x: number;
   y: number;
+  /** Position when the pointer went down, client pixels. */
   startX: number;
   startY: number;
   /** Position at the previous move, for per-event deltas. */
@@ -36,15 +44,23 @@ export interface PointerState {
   travel: number;
   /** Button that went down (0 primary, 1 middle, 2 secondary). */
   button: number;
+  /** Time the pointer went down, in milliseconds on the input's clock (`InputOptions.now`). */
   t0: number;
+  /** Modifier keys held when the pointer went down. */
   shiftKey: boolean;
   ctrlKey: boolean;
   altKey: boolean;
   metaKey: boolean;
 }
 
+/** Stage of a pointer's life. `cancel` also covers a lost pointer capture. */
 export type PointerPhase = "down" | "move" | "up" | "cancel";
 
+/**
+ * A normalised event, delivered to `Input.on` listeners. `look` carries raw mouse movement while
+ * the pointer is locked (no pointer events are sent then); `source` is the DOM event behind the
+ * others.
+ */
 export type InputEvent =
   | { kind: "pointer"; phase: PointerPhase; pointer: PointerState; source: Event }
   | {
@@ -61,7 +77,9 @@ export type InputEvent =
   | { kind: "key"; phase: "down" | "up"; code: string; repeat: boolean; source: Event }
   | { kind: "look"; dx: number; dy: number };
 
+/** A snapshot of the first connected gamepad, taken in `Input.update`. */
 export interface GamepadState {
+  /** `Gamepad.id`. */
   id: string;
   /** Standard-mapping button values 0..1, by name. */
   buttons: Record<PadButton, number>;
@@ -69,11 +87,15 @@ export interface GamepadState {
   axes: Record<PadAxis, number>;
 }
 
+/** Gamepad button names in standard-mapping order (index 0 is A, the bottom face button). */
 export const PAD_BUTTONS = [
   "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Start", "LS", "RS", "DUp", "DDown", "DLeft", "DRight", "Home",
 ] as const;
+/** Gamepad stick axis names in standard-mapping order. */
 export const PAD_AXES = ["LeftX", "LeftY", "RightX", "RightY"] as const;
+/** A standard-mapping gamepad button, as used in `pad:<name>` action sources. */
 export type PadButton = (typeof PAD_BUTTONS)[number];
+/** A standard-mapping stick axis, as used in `pad:<name>` action sources. */
 export type PadAxis = (typeof PAD_AXES)[number];
 
 /** The minimum of a FrameLoop the input needs. */
@@ -81,6 +103,7 @@ export interface Invalidatable {
   invalidate(): void;
 }
 
+/** Options for {@link createInput}. Most are injection points for tests and headless use. */
 export interface InputOptions {
   /** Invalidated on every event, so render-on-demand apps redraw. */
   loop?: Invalidatable;
@@ -92,11 +115,21 @@ export interface InputOptions {
   deadzone?: number;
   /** Stop the page scrolling or zooming on wheel over the surface. Default true. */
   captureWheel?: boolean;
+  /** Clock in milliseconds. Default `performance.now`. */
   now?: () => number;
+  /** Gamepad source. Default `navigator.getGamepads`. */
   getGamepads?: () => ArrayLike<Gamepad | null>;
 }
 
+/**
+ * The input for one surface, made by {@link createInput}. It owns every listener; gestures,
+ * actions, touch controls and camera controllers read from it rather than adding their own.
+ *
+ * Edge queries (`pressed`, `released`, `padPressed`, `virtualPressed`, ...) report what changed
+ * between the last two `update()` calls, so call `update()` once per frame before reading them.
+ */
 export interface Input {
+  /** The surface the pointer and wheel listeners are on. */
   readonly el: EventTarget;
   /** Live pointers, by id. */
   pointers(): ReadonlyMap<number, PointerState>;
@@ -107,30 +140,40 @@ export interface Input {
   on(fn: (e: InputEvent) => void, priority?: number): () => void;
   /** Reserve a pointer for one owner; others should ignore it (`claimedBy`). */
   claim(pointerId: number, owner: object): boolean;
+  /** The owner that claimed a pointer, if any. Claims are released when the pointer lifts. */
   claimedBy(pointerId: number): object | undefined;
 
   /** Key held (by `KeyboardEvent.code`). */
   down(code: string): boolean;
   /** Went down / up since the previous `update()`. */
   pressed(code: string): boolean;
+  /** Went up since the previous `update()`. */
   released(code: string): boolean;
   /** Only these codes have their default action prevented (so bound keys don't scroll). */
   captureKeys(codes: Iterable<string>): void;
 
   /** The first connected gamepad, as of the last `update()`. */
   gamepad(): GamepadState | null;
+  /** Button crossed half-way down / up between the last two `update()` calls. */
   padPressed(button: PadButton): boolean;
   padReleased(button: PadButton): boolean;
 
-  /** Values fed by on-screen controls, by name. */
+  /**
+   * Set a value on the virtual channel, read by `touch:<name>` action sources. On-screen controls
+   * call this; a non-zero value also marks touch as the last device. 0 removes the entry.
+   */
   setVirtual(name: string, value: number): void;
+  /** Current virtual value, 0 when unset. */
   virtual(name: string): number;
+  /** Became non-zero / returned to zero between the last two `update()` calls. */
   virtualPressed(name: string): boolean;
   virtualReleased(name: string): boolean;
 
   /** Ask for pointer lock (must be called from a user gesture). */
   lock(): void;
+  /** Release pointer lock if this surface holds it. */
   unlock(): void;
+  /** This surface holds pointer lock; mouse movement then arrives as `look` events. */
   locked(): boolean;
 
   /** Once per frame, before reading: advances edges and polls the gamepad. */
@@ -139,7 +182,9 @@ export interface Input {
   active(): boolean;
   /** What was used last, for showing the right prompts or touch controls. */
   lastDevice(): Device;
+  /** Called when `lastDevice()` changes. Returns an unsubscribe. */
   onDevice(fn: (d: Device) => void): () => void;
+  /** Remove every listener, drop all state and release pointer lock. */
   dispose(): void;
 }
 
@@ -166,6 +211,28 @@ const isTyping = (t: unknown): boolean => {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 };
 
+/**
+ * Create the input for one surface, usually the canvas. Make one per surface and build
+ * everything else on it; `dispose()` removes every listener at once. DOM-only in practice,
+ * though the targets and clocks can be injected (see {@link InputOptions}) to drive it
+ * headlessly.
+ *
+ * Key events are read from `window` (they never target a canvas) and ignored while a text field
+ * has focus. Held keys are released when the window loses focus or the page is hidden.
+ *
+ * @param el - The surface. It receives pointer capture and, with `lock()`, pointer lock.
+ * @returns The input; pass it to {@link recogniseGestures}, {@link makeActions},
+ *   {@link makeTouchControls}, {@link makeOrbitController} or {@link makeLookController}.
+ * @example
+ * ```ts
+ * prepareSurface(canvas, { contextMenu: false });
+ * const input = createInput(canvas, { loop });
+ * const orbit = makeOrbitController(input, { distance: 200, pan: "secondary" });
+ * // per frame:
+ * input.update();
+ * loop.setContinuous(input.active());
+ * ```
+ */
 export function createInput(el: EventTarget, opts: InputOptions = {}): Input {
   const g = globalThis as unknown as {
     window?: EventTarget;
@@ -458,7 +525,16 @@ export function createInput(el: EventTarget, opts: InputOptions = {}): Input {
 /**
  * Make an element behave as an input surface on touch devices: no browser
  * panning or pinch-zooming over it, no text selection, no tap flash, and
- * (optionally) no context menu, so right-drag can be a gesture. Returns an undo.
+ * (optionally) no context menu, so right-drag can be a gesture. Use this instead of per-app
+ * `touch-action` CSS. DOM-only.
+ *
+ * @param opts - `contextMenu: false` suppresses the context menu over the element.
+ * @returns A function that restores the previous styles and removes the listener.
+ * @example
+ * ```ts
+ * prepareSurface(canvas, { contextMenu: false });
+ * const input = createInput(canvas);
+ * ```
  */
 export function prepareSurface(el: HTMLElement, opts: { contextMenu?: boolean } = {}): () => void {
   const s = el.style as CSSStyleDeclaration & Record<string, string>;

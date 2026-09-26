@@ -15,6 +15,7 @@ import type { Orientation } from "./orient";
 import { blitModelToBricks, type BrickTarget } from "./sink";
 import { seededRandom } from "@voxolith/renderer/core";
 
+/** An inclusive box of world voxels: `x0..x1`, `y0..y1`, `z0..z1`, the shape `Renderer.edit` takes. */
 export interface Box {
   x0: number;
   y0: number;
@@ -26,6 +27,7 @@ export interface Box {
 
 /** What a generator is handed for one chunk. */
 export interface ChunkContext {
+  /** Chunk coordinates: the chunk covers x from `cx * chunk`, z from `cz * chunk`. */
   cx: number;
   cz: number;
   /** World-voxel bounds of this chunk, full height. */
@@ -47,17 +49,21 @@ export interface ChunkContext {
   ): void;
 }
 
+/** Options for {@link makeChunkedWorld}. */
 export interface ChunkedWorldOptions {
   /** Usually the Renderer. */
   target: BrickTarget & { clear(box: Box): void };
+  /** World extent in voxels; chunks are columns over the full height. */
   size: { x: number; y: number; z: number };
   /** Chunk footprint in voxels. Should be a multiple of the 8-voxel brick. */
   chunk: number;
+  /** Mixed with chunk coordinates into each chunk's `rng`. */
   seed: number;
   /** Fills one chunk. Must depend only on `ctx`, never on call order. */
   generate(ctx: ChunkContext): void;
 }
 
+/** A world built around a moving focus, from {@link makeChunkedWorld}. */
 export interface ChunkedWorld {
   /**
    * Set the point to keep the world around. Chunks within `radius` are queued
@@ -72,11 +78,40 @@ export interface ChunkedWorld {
   step(budgetMs?: number): number;
   /** Queued but not yet built. */
   readonly pending: number;
+  /** Built and not yet freed. */
   readonly resident: number;
 }
 
 const key = (cx: number, cz: number) => `${cx},${cz}`;
 
+/**
+ * Build a world a chunk at a time around a focus point and free chunks that fall out of range,
+ * so load time and memory scale with the view rather than the world. Chunks are square columns
+ * over the full height, built nearest-first within a time budget.
+ *
+ * `generate` must be a pure function of its context, because the order chunks are built in
+ * depends on where the camera went: draw randomness from `ctx.rng`, place things with
+ * {@link scatterRegion}, and blit entities rooted in neighbouring chunks too (the blit clips to
+ * this chunk). Freed chunks are cleared on the target and rebuilt from scratch if revisited, so
+ * edits made to a chunk after it was built are lost.
+ *
+ * @returns The world; call `focus` when the camera moves and `step` every frame.
+ * @example
+ * ```ts
+ * const world = makeChunkedWorld({
+ *   target: renderer, size: SIZE, chunk: 64, seed,
+ *   generate(ctx) {
+ *     ctx.edit(ctx.box, (cells, ox, oy, oz) => terrain.fillBrick(cells, ox, oy, oz, groundBase));
+ *     scatterRegion({ cell: 40, seed, salt: 1 }, ctx.box.x0 - 32, ctx.box.z0 - 32, ctx.box.x1 + 32, ctx.box.z1 + 32, (pt) => {
+ *       if (pt.rng() < 0.5) ctx.blit(tree.model, { x: pt.x, y: terrain.heightAt(pt.x, pt.z) + 1, z: pt.z }, treeBase);
+ *     });
+ *   },
+ * });
+ * // per frame:
+ * world.focus(target[0], target[2], 400);
+ * if (world.step(6) > 0) loop.invalidate();
+ * ```
+ */
 export function makeChunkedWorld(opts: ChunkedWorldOptions): ChunkedWorld {
   const { target, size, chunk, seed } = opts;
   const nx = Math.ceil(size.x / chunk);
