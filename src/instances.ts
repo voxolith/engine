@@ -25,6 +25,8 @@ export interface InstanceTarget {
     parts?: Uint8Array;
     /** Per part, its parent (-1 for none) and the joint where it meets it. */
     joints?: readonly { parent: number; at: readonly [number, number, number] }[];
+    /** Per-part boxes to pack poses with (shared by copies of a model, so they share poses). */
+    partBoxes?: Int32Array;
   }): number;
   removeModel(id: number): void;
   /** A palette of its own for instances; returns its base slot. */

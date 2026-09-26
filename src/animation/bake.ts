@@ -15,6 +15,7 @@
 
 import type { EntityModel, Rig } from "../entity";
 import { invertRigid, mulAffine, transformPoint, type Vec3 } from "./math";
+import { partBoxes } from "@voxolith/renderer/core";
 
 /** Options for {@link bakePose}. */
 export interface BakeOptions {
@@ -363,7 +364,14 @@ export interface RiggedModel {
   joints: { parent: number; at: [number, number, number] }[];
   /** The rest anchor. */
   anchor: Vec3;
+  /**
+   * Each bone's voxel box (min x, y, z, max x, y, z), of the undamaged model when one is given: the
+   * renderer packs one pose per set of boxes, so wounded copies that share them share every pose.
+   */
+  partBoxes: Int32Array;
 }
+
+const riggedBoxes = new WeakMap<EntityModel, Int32Array>();
 
 /**
  * Prepare a rigged rest model to be posed on the GPU (`makeCrowd({ rigged: true })`, or a
@@ -385,6 +393,8 @@ export interface RiggedModel {
  * @param model - The rest model; it must carry `bones`.
  * @param rig - The entity's rig.
  * @param cover - Role → cover role table; defaults to `rig.cover`.
+ * @param base - The undamaged model this one was wounded from, if any: its bone boxes (which
+ *   contain the wounded model's) are used, so every wounded copy shares the base's poses.
  * @returns The model with bone ids and joints, as `addModel` takes it with parts.
  * @example
  * ```ts
@@ -395,7 +405,7 @@ export interface RiggedModel {
  * renderer.setInstances([{ model: id, x, y, z, anchor: rest.anchor, yaw, base: ratBase, parts: bones }], { dynamic: true });
  * ```
  */
-export function prepareRigged(model: EntityModel, rig: Rig, cover: ArrayLike<number> | undefined = rig.cover): RiggedModel {
+export function prepareRigged(model: EntityModel, rig: Rig, cover: ArrayLike<number> | undefined = rig.cover, base: EntityModel = model): RiggedModel {
   if (!model.bones) throw new Error("prepareRigged needs a rigged model (model.bones)");
   const data = Uint8Array.from(model.data);
   if (cover) {
@@ -411,5 +421,13 @@ export function prepareRigged(model: EntityModel, rig: Rig, cover: ArrayLike<num
     parts: model.bones,
     joints: rig.bones.map((b) => ({ parent: b.parent, at: [b.head[0], b.head[1], b.head[2]] })),
     anchor: [model.anchor[0], model.anchor[1], model.anchor[2]],
+    partBoxes: boxesOf(base.bones ? base : model, rig.bones.length),
   };
+}
+
+/** Bone boxes of a rigged model, computed once per model. */
+function boxesOf(model: EntityModel, n: number): Int32Array {
+  let b = riggedBoxes.get(model);
+  if (!b) riggedBoxes.set(model, (b = partBoxes(model.size, model.data, model.bones!, n)));
+  return b;
 }

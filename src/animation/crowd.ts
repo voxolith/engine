@@ -274,7 +274,8 @@ export function makeCrowd(opts: CrowdOptions): Crowd {
 function makeRiggedCrowd(opts: CrowdOptions, layer: InstanceLayer): Crowd {
   const fps = opts.fps ?? 12;
   const near = opts.near ?? 120, farFps = opts.farFps ?? 6, freeze = opts.freeze ?? 400;
-  // Bone matrices depend only on the variant, clip and frame; members share them.
+  // Bone matrices depend only on the variant, clip and frame; members share them, and the renderer
+  // packs and uploads each set once (keyed by the matrices object), whoever shows it.
   const cache = opts.cache ?? makePoseCache<BakedPose>(() => 26 * 48 + 64, { maxBytes: 16 * 1024 * 1024 });
   const rests = new Map<string, { id: number; anchor: Vec3 }>();
   const lastPose = new Map<number, BakedPose>();
@@ -283,8 +284,9 @@ function makeRiggedCrowd(opts: CrowdOptions, layer: InstanceLayer): Crowd {
     const key = `${m.variant}.${m.damage ?? 0}`;
     let r = rests.get(key);
     if (!r) {
-      const rest = prepareRigged(m.rest ?? m.entity.model, m.entity.rig as Rig);
-      r = { id: layer.target.addModel({ size: rest.size, data: rest.data, parts: rest.parts, joints: rest.joints }), anchor: rest.anchor };
+      // A wounded rest model uses the undamaged model's bone boxes, so it shares its poses.
+      const rest = prepareRigged(m.rest ?? m.entity.model, m.entity.rig as Rig, undefined, m.entity.model);
+      r = { id: layer.target.addModel({ size: rest.size, data: rest.data, parts: rest.parts, joints: rest.joints, partBoxes: rest.partBoxes }), anchor: rest.anchor };
       rests.set(key, r);
     }
     return r;

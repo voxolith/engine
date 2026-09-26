@@ -13,7 +13,7 @@ import {
   transformPoint,
   wound,
 } from "../src/animation/index";
-import { INST_WORDS, maxPartWords, packInstance, partBoxes, sampleInstance as sampleCpu } from "@voxolith/renderer/core";
+import { INST_WORDS, maxPoseWords, packInstance, packPose, partBoxes, sampleInstance as sampleCpu } from "@voxolith/renderer/core";
 
 let failed = 0, checks = 0;
 const ok = (c: boolean, m: string, d = "") => {
@@ -220,13 +220,16 @@ console.log("posing on the GPU (renderer parts) matches baking:");
       const v = sampleCpu(w1, 0, undefined, { size: P, voxel: (a, b, c) => posed.data[a + b * P.x + c * pxy], part: () => 0 }, x, y, z);
       if (v) baked.set(key(x, y, z), v);
     }
-    // Posed on the GPU: one instance, a transform per part, no weld (joints unset).
-    const w2 = new Uint32Array(INST_WORDS), parts = new Uint32Array(maxPartWords({ size, partBoxes: pb }));
-    const b2 = packInstance({ ...at, anchor: rest.anchor, base: 1, parts: mats }, { size, partBoxes: pb }, 0, w2, 0, parts, 0).box;
+    // Posed on the GPU: the pose packed once in model space, one instance naming it, no weld
+    // (joints unset).
+    const poses = new Uint32Array(maxPoseWords({ size, partBoxes: pb }));
+    const packed = packPose(mats, { size, partBoxes: pb }, poses, 0);
+    const w2 = new Uint32Array(INST_WORDS);
+    const b2 = packInstance({ ...at, anchor: rest.anchor, base: 1, parts: mats }, { size, partBoxes: pb }, 0, w2, 0, { off: 0, box: packed.box }).box;
     let diff = 0;
     const seen = new Set<number>();
     for (let z = Math.floor(b2[2]); z < Math.ceil(b2[5]); z++) for (let y = Math.floor(b2[1]); y < Math.ceil(b2[4]); y++) for (let x = Math.floor(b2[0]); x < Math.ceil(b2[3]); x++) {
-      const v = sampleCpu(w2, 0, parts, restLookup, x, y, z);
+      const v = sampleCpu(w2, 0, poses, restLookup, x, y, z);
       if (!v) continue;
       const k = key(x, y, z);
       seen.add(k);
