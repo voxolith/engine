@@ -11,6 +11,7 @@
 import type { Entity } from "../entity";
 import type { GenerateContext } from "../generator";
 import type { GenerateRequest, WorkerResponse } from "./protocol";
+import { LOAD_PHASES, type LoadTask, type LoadTracker } from "../load";
 
 /** Options for {@link makeGeneratorPool}. */
 export interface GeneratorPoolOptions {
@@ -26,6 +27,13 @@ export interface GeneratorPoolOptions {
    * is memory-heavy and the main thread still needs a core to draw on.
    */
   size?: number;
+  /**
+   * Report into a load tracker under the `models` phase: one item per request as it is queued,
+   * a tick as each result (or error) comes back, marked `cached` when the worker's model cache
+   * served it and labelled with the generator id. The phase is busy while requests are pending
+   * and ends when the queue drains; the next request starts it again.
+   */
+  load?: LoadTracker;
 }
 
 /**
@@ -113,7 +121,21 @@ function defaultSize(): number {
 export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
   const size = Math.max(1, Math.floor(opts.size ?? defaultSize()));
   const waiting: { spec: GenerateSpec; resolve: (e: Entity) => void; reject: (e: Error) => void }[] = [];
-  const inflight = new Map<number, { resolve: (e: Entity) => void; reject: (e: Error) => void; slot: Slot }>();
+  const inflight = new Map<number, { resolve: (e: Entity) => void; reject: (e: Error) => void; slot: Slot; generator: string }>();
+  let task: LoadTask | undefined;
+  const queued = () => {
+    if (!opts.load) return;
+    task ??= opts.load.task(LOAD_PHASES.models);
+    task.add(1);
+  };
+  const landed = (generator: string, cached: boolean) => {
+    if (!task) return;
+    task.tick(1, { cached, label: generator });
+    if (waiting.length + inflight.size === 0) {
+      task.end();
+      task = undefined;
+    }
+  };
   let nextId = 1;
   let destroyed = false;
   let cachedCount = 0;
@@ -132,24 +154,30 @@ export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
         if (!entry) return;
         inflight.delete(msg.id);
         entry.slot.busy = false;
+        drain();
+        landed(entry.generator, msg.kind === "ok" && !!msg.cached);
         if (msg.kind === "ok") {
           if (msg.cached) cachedCount++;
           entry.resolve(msg.entity);
         }
         else entry.reject(new Error(msg.message));
-        drain();
       };
       worker.onerror = (ev: ErrorEvent) => {
         // A worker that dies takes its request with it; fail that one rather
         // than hanging, and let the remaining workers carry on.
+        const failed: { reject: (e: Error) => void; generator: string }[] = [];
         for (const [id, entry] of inflight)
           if (entry.slot === slot) {
             inflight.delete(id);
-            entry.reject(new Error(ev.message || "generator worker failed"));
+            failed.push(entry);
           }
         slot.busy = false;
         resolveReady();
         drain();
+        for (const entry of failed) {
+          landed(entry.generator, false);
+          entry.reject(new Error(ev.message || "generator worker failed"));
+        }
       };
     });
     return slot;
@@ -162,7 +190,7 @@ export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
       const job = waiting.shift()!;
       const id = nextId++;
       slot.busy = true;
-      inflight.set(id, { resolve: job.resolve, reject: job.reject, slot });
+      inflight.set(id, { resolve: job.resolve, reject: job.reject, slot, generator: job.spec.generator });
       const req: GenerateRequest = {
         kind: "generate",
         id,
@@ -191,6 +219,7 @@ export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
       if (destroyed) return Promise.reject(new Error("generator pool destroyed"));
       return new Promise<Entity>((resolve, reject) => {
         waiting.push({ spec, resolve, reject });
+        queued();
         drain();
       });
     },
@@ -209,7 +238,10 @@ export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
       destroyed = true;
       for (const entry of inflight.values()) entry.reject(new Error("generator pool destroyed"));
       inflight.clear();
-      waiting.length = 0;
+      // Queued requests reject too, or their promises would never settle.
+      for (const job of waiting.splice(0)) job.reject(new Error("generator pool destroyed"));
+      task?.end();
+      task = undefined;
       for (const s of slots) s.worker.terminate();
     },
   };

@@ -14,6 +14,7 @@ import type { EntityModel } from "./entity";
 import type { Orientation } from "./orient";
 import { blitModelToBricks, type BrickTarget } from "./sink";
 import { seededRandom } from "@voxolith/renderer/core";
+import { LOAD_PHASES, type LoadTask, type LoadTracker } from "./load";
 
 /** An inclusive box of world voxels: `x0..x1`, `y0..y1`, `z0..z1`, the shape `Renderer.edit` takes. */
 export interface Box {
@@ -61,6 +62,13 @@ export interface ChunkedWorldOptions {
   seed: number;
   /** Fills one chunk. Must depend only on `ctx`, never on call order. */
   generate(ctx: ChunkContext): void;
+  /**
+   * Report into a load tracker under the `ground` phase: `focus` adds the chunks it newly
+   * queues and `step` ticks each one it builds, so the total is what was actually asked for.
+   * Freed chunks are not counted back; revisiting one queues it again and adds it again. The
+   * phase ends when the queue is empty and starts again when the camera moves on.
+   */
+  load?: LoadTracker;
 }
 
 /** A world built around a moving focus, from {@link makeChunkedWorld}. */
@@ -119,6 +127,7 @@ export function makeChunkedWorld(opts: ChunkedWorldOptions): ChunkedWorld {
   const live = new Set<string>();
   const queued = new Set<string>();
   let queue: { cx: number; cz: number; d2: number }[] = [];
+  let task: LoadTask | undefined;
 
   const boxOf = (cx: number, cz: number): Box => ({
     x0: cx * chunk,
@@ -181,6 +190,10 @@ export function makeChunkedWorld(opts: ChunkedWorldOptions): ChunkedWorld {
       if (want.length) {
         for (const w of want) queued.add(key(w.cx, w.cz));
         queue = queue.concat(want).sort((a, b) => a.d2 - b.d2);
+        if (opts.load) {
+          task ??= opts.load.task(LOAD_PHASES.ground);
+          task.add(want.length);
+        }
       }
 
       // Free what has drifted out. `keep` is larger than `radius` so a camera
@@ -202,7 +215,12 @@ export function makeChunkedWorld(opts: ChunkedWorldOptions): ChunkedWorld {
         const next = queue.shift()!;
         queued.delete(key(next.cx, next.cz));
         build(next.cx, next.cz);
+        task?.tick(1);
         if (performance.now() - t0 >= budgetMs) break;
+      }
+      if (task && queue.length === 0) {
+        task.end();
+        task = undefined;
       }
       return queue.length;
     },

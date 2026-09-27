@@ -9,6 +9,8 @@
  * {@link blitModel} or {@link blitModelToBricks} stamps it. {@link makeChunkedWorld} and
  * {@link scatterRegion} build large worlds a chunk at a time, {@link makeInstanceLayer} draws
  * models by reference at any yaw, and {@link makeBrickStamper} moves things through the bricks.
+ * {@link makeLoadTracker} collects load progress by phase from those loaders, for an app's own
+ * loading screen and for timing the load.
  * Share codes ({@link encodeState}, {@link decodeState}) rebuild a generated model from a short
  * string.
  *
@@ -44,7 +46,9 @@ export { scatterRegion } from "./scatter";
 export type { BrickTarget } from "./sink";
 export { makeBrickStamper, toSprite } from "./dynamic";
 export { makeInstanceLayer, makeModelLibrary, makePaletteLibrary, orientationYaw } from "./instances";
-export type { EntityPlacement, InstanceLayer, InstancePlacement, InstanceTarget, ModelLibrary, PaletteLibrary } from "./instances";
+export type { EntityPlacement, InstanceLayer, InstanceLayerOptions, InstancePlacement, InstanceTarget, ModelLibrary, ModelLibraryOptions, PaletteLibrary } from "./instances";
+export { LOAD_PHASES, formatTimeline, makeLoadTracker, trackRenderer } from "./load";
+export type { LoadEvent, LoadPhase, LoadSnapshot, LoadTask, LoadTickInfo, LoadTracker, PhaseState, RendererLoadCallback, TimelineEntry } from "./load";
 export type { BrickStamper, MultiBrickTarget, Sprite, StampStats } from "./dynamic";
 export { blitModelToBricks } from "./sink";
 export type { Variant, VariantPool, VariantPoolOptions } from "./variants";

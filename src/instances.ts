@@ -14,6 +14,7 @@
 import type { EntityModel, RGB, Role, Vec3 } from "./entity";
 import { instancePalette } from "./palette";
 import type { SparseVoxels } from "@voxolith/renderer/core";
+import { LOAD_PHASES, type LoadTask, type LoadTracker } from "./load";
 
 /** What a renderer offers for instancing; `Renderer` implements it. */
 export interface InstanceTarget {
@@ -84,19 +85,37 @@ export interface ModelLibrary {
   readonly size: number;
 }
 
-/**
- * Upload each model to an instancing target once, keyed by object identity: pass the same
- * `EntityModel` object and get the same id back. Dense and sparse models both work. Models stay
- * on the GPU until released. {@link makeInstanceLayer} makes one for you.
- */
-export function makeModelLibrary(target: InstanceTarget): ModelLibrary {
+/** Options for {@link makeModelLibrary}. */
+export interface ModelLibraryOptions {
+  /**
+   * Report uploads into a load tracker under the `upload` phase, one tick per model seen for the
+   * first time. Uploads made in one synchronous run (a `setStatic` call, a loop of `id` calls)
+   * form one span, which ends at the end of that run.
+   */
+  load?: LoadTracker;
+}
+
+/** A model library plus the hook that closes its current upload span. */
+function modelLibrary(target: InstanceTarget, load: LoadTracker | undefined): { lib: ModelLibrary; settle(): void } {
   const ids = new Map<EntityModel, number>();
-  return {
+  let task: LoadTask | undefined;
+  const settle = () => {
+    task?.end();
+    task = undefined;
+  };
+  const lib: ModelLibrary = {
     id(model) {
       let id = ids.get(model);
       if (id === undefined) {
+        if (load && !task) {
+          task = load.task(LOAD_PHASES.upload);
+          // Direct `id` calls have no natural end; close the span once this run is over.
+          queueMicrotask(settle);
+        }
+        task?.add(1);
         id = target.addModel(model.sparse ? { size: model.size, sparse: model.sparse } : { size: model.size, data: model.data });
         ids.set(model, id);
+        task?.tick(1);
       }
       return id;
     },
@@ -110,6 +129,18 @@ export function makeModelLibrary(target: InstanceTarget): ModelLibrary {
       return ids.size;
     },
   };
+  return { lib, settle };
+}
+
+/**
+ * Upload each model to an instancing target once, keyed by object identity: pass the same
+ * `EntityModel` object and get the same id back. Dense and sparse models both work. Models stay
+ * on the GPU until released. {@link makeInstanceLayer} makes one for you.
+ *
+ * @param opts - `load` reports first-sight uploads into a tracker (phase `upload`).
+ */
+export function makeModelLibrary(target: InstanceTarget, opts: ModelLibraryOptions = {}): ModelLibrary {
+  return modelLibrary(target, opts.load).lib;
 }
 
 /** A placement of an entity's model, by model rather than id. */
@@ -210,6 +241,18 @@ export interface InstanceLayer {
   count(): number;
 }
 
+/** Options for {@link makeInstanceLayer}. */
+export interface InstanceLayerOptions {
+  /**
+   * Report into a load tracker: first-sight model uploads under `upload` (one tick per model),
+   * and each static `setInstances` in `commit` under `placement`, with the number of static
+   * placements as its total (ticked all at once, since the renderer builds them in one call).
+   * An empty static set is not reported. Both block the main thread; see
+   * {@link makeLoadTracker} for what that means for a loading screen.
+   */
+  load?: LoadTracker;
+}
+
 /**
  * Draw entities by reference instead of stamping them into the world: one GPU copy of each
  * model, drawn wherever it is placed, at any yaw, mirrored, at fractional positions. Instances
@@ -217,6 +260,7 @@ export interface InstanceLayer {
  * written into the world's bricks.
  *
  * @param target - A renderer with instancing (`Renderer` implements {@link InstanceTarget}).
+ * @param opts - `load` reports uploads and placement into a load tracker.
  * @returns The layer; pass it to `makeCrowd` as `instances` for animated members.
  * @example
  * ```ts
@@ -226,8 +270,8 @@ export interface InstanceLayer {
  * layer.commit();
  * ```
  */
-export function makeInstanceLayer(target: InstanceTarget): InstanceLayer {
-  const models = makeModelLibrary(target);
+export function makeInstanceLayer(target: InstanceTarget, opts: InstanceLayerOptions = {}): InstanceLayer {
+  const { lib: models, settle: settleUploads } = modelLibrary(target, opts.load);
   const palettes = makePaletteLibrary(target);
   let fixed: InstancePlacement[] = [];
   let moving: readonly InstancePlacement[] = [];
@@ -239,6 +283,7 @@ export function makeInstanceLayer(target: InstanceTarget): InstanceLayer {
     setStatic(list) {
       fixed = list.map((p) => ({ model: models.id(p.model), x: p.x, y: p.y, z: p.z, anchor: p.model.anchor, yaw: p.yaw ?? 0, rotation: p.rotation, mirror: p.mirror, base: p.base }));
       fixedDirty = true;
+      settleUploads();
     },
     setDynamic(list) {
       moving = list;
@@ -246,7 +291,14 @@ export function makeInstanceLayer(target: InstanceTarget): InstanceLayer {
     commit() {
       // Scenery is sent once; the moving set every commit.
       if (fixedDirty) {
-        target.setInstances(fixed);
+        settleUploads();
+        const task = opts.load && fixed.length > 0 ? opts.load.task(LOAD_PHASES.placement, fixed.length) : undefined;
+        try {
+          target.setInstances(fixed);
+          task?.tick(fixed.length);
+        } finally {
+          task?.end();
+        }
         fixedDirty = false;
       }
       target.setInstances(moving, { dynamic: true });

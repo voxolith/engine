@@ -14,7 +14,7 @@ It never authors models: generators bake them, the engine consumes them.
 
 ```sh
 bun run --cwd engine typecheck
-bun run --cwd engine verify   # verify, -input, -atmosphere, -animation, -dynamic, -instances
+bun run --cwd engine verify   # verify, -input, -atmosphere, -animation, -dynamic, -instances, -load
 ```
 
 CI (`ci.yml`, job `typecheck`) runs both, with `renderer` checked out alongside.
