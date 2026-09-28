@@ -37,7 +37,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "verify": "bun tools/verify.ts && bun tools/verify-input.ts && bun tools/verify-atmosphere.ts && bun tools/verify-animation.ts && bun tools/verify-dynamic.ts && bun tools/verify-instances.ts && bun tools/verify-load.ts"
+    "verify": "bun tools/verify.ts && bun tools/verify-input.ts && bun tools/verify-atmosphere.ts && bun tools/verify-animation.ts && bun tools/verify-dynamic.ts && bun tools/verify-instances.ts && bun tools/verify-load.ts && bun tools/verify-pool.ts && bun tools/verify-placement.ts"
   },
   "dependencies": {
     "@voxolith/renderer": "workspace:*"

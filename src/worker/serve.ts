@@ -19,7 +19,7 @@ import { seededRandom } from "@voxolith/renderer/core";
 import type { Entity } from "../entity";
 import { getGenerator, listGenerators } from "../generator";
 import type { WorkerRequest, WorkerResponse } from "./protocol";
-import { openModelCache, type ModelCache } from "./cache";
+import { openModelCache, openModelCacheOn, type CacheStore, type ModelCache, type ModelCacheOptions } from "./cache";
 
 /** Minimal shape of the worker global, so this file needs no DOM lib. */
 interface WorkerScope {
@@ -49,11 +49,29 @@ export interface ServeOptions {
   /** The worker global (default `self`). */
   scope?: WorkerScope;
   /**
-   * Keep generated models in IndexedDB under this database name and load
-   * them from there next time (see cache.ts). Off by default; leave it off
-   * in development, where the worker URL does not change with the code.
+   * Keep generated models in IndexedDB under this database name and load them from there next
+   * time ({@link openModelCache}). Off by default; leave it off in development, where the worker
+   * URL does not change with the code. The object form adds a size cap
+   * ({@link ModelCacheOptions.maxBytes}, evicting by last use). Inspect and clear it from the
+   * main thread with {@link openModelCacheControls}; a request can skip it with the pool's
+   * `generate(spec, { cache: false })`.
+   *
+   * Opening the cache deletes every entry stored under another salt (an older build of this
+   * worker), so give each worker script its own database name: two apps on one origin (GitHub
+   * Pages serves every repo from one) sharing a name would delete each other's models.
    */
-  cache?: string;
+  cache?: string | ServeCacheOptions;
+}
+
+/** The object form of {@link ServeOptions.cache}. */
+export interface ServeCacheOptions extends ModelCacheOptions {
+  /** The IndexedDB database name. */
+  name?: string;
+  /**
+   * A storage of your own instead of IndexedDB (another backend, or {@link memoryCacheStore} in
+   * tests). Takes precedence over `name`.
+   */
+  store?: CacheStore;
 }
 
 /**
@@ -65,7 +83,8 @@ export interface ServeOptions {
  *
  * With `cache`, models are kept in IndexedDB keyed by generator id and version, seed, params
  * and context, salted with this worker's URL, so a production build (which hashes the URL)
- * never serves a model made by older generator code.
+ * never serves a model made by older generator code. Writes finish after the result is posted;
+ * the pool's `destroy()` asks the worker to finish them (`close`) before terminating it.
  *
  * @param opts - Options, or the worker scope itself (the older form).
  * @example
@@ -83,9 +102,25 @@ export function serveGenerators(opts: ServeOptions | WorkerScope = {}): void {
   // The worker's own URL is the salt: a production build hashes it, so a
   // model made by older generator code is never served.
   const salt = String((globalThis as { location?: { href: string } }).location?.href ?? "worker");
-  const cache: Promise<ModelCache | null> = o.cache ? openModelCache(o.cache, salt) : Promise.resolve(null);
+  const spec = typeof o.cache === "string" ? { name: o.cache } : o.cache;
+  const cacheOpts = { maxBytes: spec?.maxBytes };
+  const cache: Promise<ModelCache | null> = spec?.store
+    ? openModelCacheOn(spec.store, salt, cacheOpts)
+    : spec?.name
+      ? openModelCache(spec.name, salt, cacheOpts)
+      : Promise.resolve(null);
+  // Cache writes still in progress. They finish after the result has been posted, and the
+  // worker is often busy with the next generation meanwhile, so a pool that terminated its
+  // workers straight after the last result lost them; it asks with `close` first now.
+  const writes = new Set<Promise<void>>();
   scope.onmessage = async (ev) => {
     const req = ev.data;
+    if (req?.kind === "close") {
+      await cache;
+      while (writes.size) await Promise.allSettled([...writes]);
+      scope.postMessage({ kind: "closed" });
+      return;
+    }
     if (!req || req.kind !== "generate") return;
     try {
       const gen = getGenerator(req.generator);
@@ -95,7 +130,7 @@ export function serveGenerators(opts: ServeOptions | WorkerScope = {}): void {
             `Registered: ${listGenerators().map((g) => g.id).join(", ") || "none"}`,
         );
       }
-      const store = await cache;
+      const store = req.cache === false ? null : await cache;
       const key = `${gen.id}@${gen.version}|${req.seed}|${JSON.stringify(req.params)}|${JSON.stringify(req.ctx ?? {})}`;
       const hit = store ? await store.get(key) : undefined;
       if (hit) {
@@ -107,7 +142,11 @@ export function serveGenerators(opts: ServeOptions | WorkerScope = {}): void {
       if (req.entityId) entity.id = req.entityId;
       // put() packs a copy before it first awaits, so the buffers can be
       // handed over straight away while it compresses and stores.
-      if (store) void store.put(key, entity);
+      if (store) {
+        const w = store.put(key, entity, { generator: gen.id });
+        writes.add(w);
+        void w.finally(() => writes.delete(w));
+      }
       scope.postMessage({ kind: "ok", id: req.id, entity }, transferables(entity));
     } catch (err) {
       scope.postMessage({

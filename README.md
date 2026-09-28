@@ -48,7 +48,7 @@ renderer.updatePalette(palette.buildPalette());
 |---|---|
 | `@voxolith/engine` | entity and generator contracts, registry, share codes, palette allocation, orientation, placement, chunked worlds, instance layers, brick stamping (runtime-safe: no DOM, no GPU) |
 | `@voxolith/engine/vox` | MagicaVoxel import and export |
-| `@voxolith/engine/worker` | off-thread generation pool, with an optional IndexedDB model cache |
+| `@voxolith/engine/worker` | off-thread generation pool (priority, cancelling, pausing), with an optional IndexedDB model cache and controls to inspect, clear and cap it |
 | `@voxolith/engine/animation` | rigs and clips: play (`makeAnimator`), pose, bake posed models, damage (`wound`, `sever`), pose cache, crowds |
 | `@voxolith/engine/atmosphere` | time of day and weather as configuration: `timeOfDay`, `Atmosphere` presets, blending and transitions, `atmosphereFrame` into the renderer's settings |
 | `@voxolith/engine/input` | desktop and mobile input: pointers, keys, wheel, pointer lock, gamepad, gestures, actions, touch controls, orbit and look controllers (DOM only) |

@@ -16,7 +16,8 @@
  * - `pipelines`: creating the renderer's pipelines, one tick per variant ({@link trackRenderer}).
  * - `models`: generating (or loading from the cache) entities on the generator pool.
  * - `upload`: first-sight `addModel` uploads in an instance layer's model library.
- * - `placement`: the static `setInstances` of an instance layer (the per-cell lists and tables).
+ * - `placement`: an instance layer's static placement (the per-cell lists and tables), from
+ *   `commit()`, or from the bake request to the apply with `commitAsync()`.
  * - `ground`: chunks built by a chunked world.
  */
 export const LOAD_PHASES = {
@@ -81,6 +82,13 @@ export interface LoadTask {
    * idle phase always reads `done === total`. Calling it twice is harmless.
    */
   end(): void;
+  /**
+   * Close the task and take back what it ticked as well: its items leave the phase's `done`,
+   * `total` and `cached`, as if it had never run. For work whose partial progress was shown but
+   * whose result is thrown away (a superseded placement bake). The phase's `done` can drop, but
+   * never below 0 or above `total`. After `end()` it does nothing, and the reverse.
+   */
+  discard(): void;
 }
 
 /** A phase as {@link LoadTracker.snapshot} reports it. */
@@ -194,8 +202,10 @@ interface Phase {
  * the stall lets a frame paint first, then calls the blocking step:
  * `await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)))`. A bare
  * `requestAnimationFrame` is not enough, because code resuming from its callback still runs
- * before that frame is painted. Moving those steps off the main thread later does not change
- * this API.
+ * before that frame is painted. Two of those steps need not block at all: the renderer's
+ * `prepare()` (with `deferPipelines`) compiles pipelines asynchronously, and an instance layer's
+ * `commitAsync()` bakes placement on a worker. Their phases then span the real work while the
+ * page keeps drawing.
  *
  * @example
  * ```ts
@@ -260,6 +270,7 @@ export function makeLoadTracker(): LoadTracker {
       ph.open++;
       let expected = Math.max(0, total);
       let finished = 0;
+      let fromCache = 0;
       let open = true;
       ph.total += expected;
       if (wasIdle) {
@@ -268,6 +279,25 @@ export function makeLoadTracker(): LoadTracker {
         ph.spans++;
         emit(ph, "start", undefined, t);
       } else if (expected > 0) emit(ph, "progress", undefined, t);
+      function close(drop: boolean): void {
+        if (!open) return;
+        open = false;
+        ph.total -= expected - finished;
+        if (drop && finished > 0) {
+          ph.total -= finished;
+          ph.done -= finished;
+          ph.cached -= fromCache;
+          emit(ph, "progress");
+        }
+        ph.open--;
+        if (ph.open === 0) {
+          const t = now();
+          ph.end = t;
+          ph.busyMs += t - ph.since;
+          emit(ph, "end", undefined, t);
+          settle();
+        }
+      }
       return {
         add(n = 1) {
           if (!open || n <= 0) return;
@@ -279,26 +309,18 @@ export function makeLoadTracker(): LoadTracker {
           if (!open || n <= 0) return;
           finished += n;
           ph.done += n;
-          if (info?.cached) ph.cached += n;
+          if (info?.cached) {
+            ph.cached += n;
+            fromCache += n;
+          }
           if (finished > expected) {
             ph.total += finished - expected;
             expected = finished;
           }
           emit(ph, "progress", info?.label);
         },
-        end() {
-          if (!open) return;
-          open = false;
-          ph.total -= expected - finished;
-          ph.open--;
-          if (ph.open === 0) {
-            const t = now();
-            ph.end = t;
-            ph.busyMs += t - ph.since;
-            emit(ph, "end", undefined, t);
-            settle();
-          }
-        },
+        end: () => close(false),
+        discard: () => close(true),
       };
     },
 

@@ -14,7 +14,7 @@ It never authors models: generators bake them, the engine consumes them.
 
 ```sh
 bun run --cwd engine typecheck
-bun run --cwd engine verify   # verify, -input, -atmosphere, -animation, -dynamic, -instances, -load
+bun run --cwd engine verify   # verify, -input, -atmosphere, -animation, -dynamic, -instances, -load, -pool, -placement
 ```
 
 CI (`ci.yml`, job `typecheck`) runs both, with `renderer` checked out alongside.
@@ -27,7 +27,11 @@ CI (`ci.yml`, job `typecheck`) runs both, with `renderer` checked out alongside.
 - `src/chunks.ts` (streaming), `src/instances.ts` (the instance layer, `palettes.of`),
   `src/dynamic.ts` (`makeBrickStamper`: movers in a streamed world, keeping per brick only
   the cells it overwrote), `src/scatter.ts`, `src/sink.ts`, `src/vox.ts`.
-- `src/worker/`: `makeGeneratorPool`, `serveGenerators({ cache })` (the IndexedDB model cache).
+- `src/worker/`: `makeGeneratorPool` (priority, abort, pause, reprioritise; `destroy()` lets idle
+  workers finish their cache writes), `serveGenerators({ cache })` (the IndexedDB model cache) and
+  `openModelCacheControls` (inspect, clear, trim; the logic runs on a `CacheStore`, tested in memory).
+  `makePlacementWorker` / `servePlacement`: the static placement bake on a worker of its own, for
+  `makeInstanceLayer(target, { placement })` and `layer.commitAsync()`.
 - `src/input/`: `createInput`, `prepareSurface`, orbit and look controllers, gestures, actions
   and touch controls.
 - `src/atmosphere/`: `timeOfDay`, `ATMOSPHERES`, blending, `atmosphereFrame`.

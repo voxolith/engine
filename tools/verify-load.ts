@@ -6,7 +6,7 @@
 
 import { formatTimeline, LOAD_PHASES, makeLoadTracker, trackRenderer, type LoadEvent } from "../src/load";
 import { makeGeneratorPool } from "../src/worker/pool";
-import type { WorkerRequest, WorkerResponse } from "../src/worker/protocol";
+import type { GenerateRequest, WorkerRequest, WorkerResponse } from "../src/worker/protocol";
 import { makeChunkedWorld } from "../src/chunks";
 import { makeInstanceLayer, makeModelLibrary, type InstanceTarget } from "../src/instances";
 import type { Entity, EntityModel } from "../src/entity";
@@ -68,6 +68,34 @@ console.log("tracker:");
     "  timeline: one entry per phase in start order, first start to latest end, two spans", JSON.stringify(gt));
   const snap = load.snapshot();
   ok(snap.done === 11 && snap.total === 11 && snap.cached === 1 && !snap.busy, "snapshot totals sum the phases", JSON.stringify(snap));
+}
+
+console.log("discard():");
+{
+  const load = makeLoadTracker();
+  const events = record(load);
+  const keep = load.task("bake", 4);
+  keep.tick(1);
+  const drop = load.task("bake", 10);
+  drop.tick(3, { cached: true });
+  drop.tick(2);
+  drop.discard();
+  const s = load.snapshot().phases[0];
+  ok(s.done === 1 && s.total === 4 && s.cached === 0 && s.busy, "a discarded task takes back its ticks, total and cached; other tasks keep theirs", JSON.stringify(s));
+  drop.tick(5);
+  drop.end();
+  ok(load.snapshot().phases[0].done === 1, "  it is inert afterwards");
+  keep.tick(3);
+  keep.discard();
+  keep.end();
+  const e = load.snapshot().phases[0];
+  ok(e.done === 0 && e.total === 0 && !e.busy && events.at(-1)!.kind === "end", "  discarding the last open task ends the phase at 0/0", JSON.stringify(e));
+  const t = load.task("bake", 2);
+  t.tick(2);
+  t.end();
+  t.discard();
+  ok(load.snapshot().phases[0].done === 2, "  discard after end does nothing");
+  ok(events.every((x) => x.done <= x.total && x.done >= 0), "  no event ever has done > total or done < 0");
 }
 
 console.log("idle():");
@@ -161,16 +189,19 @@ console.log("formatTimeline:");
 
 // A fake worker: records requests; the test answers them.
 function fakeWorkers() {
-  const workers: { requests: WorkerRequest[]; reply(msg: WorkerResponse): void; die(): void; terminated: boolean }[] = [];
+  const workers: { requests: GenerateRequest[]; reply(msg: WorkerResponse): void; die(): void; terminated: boolean }[] = [];
   const spawn = () => {
     const w = {
       onmessage: null as ((ev: MessageEvent<WorkerResponse>) => void) | null,
       onerror: null as ((ev: ErrorEvent) => void) | null,
-      postMessage(req: WorkerRequest) { rec.requests.push(req); },
+      postMessage(req: WorkerRequest) {
+        if (req.kind === "close") queueMicrotask(() => rec.reply({ kind: "closed" }));
+        else rec.requests.push(req);
+      },
       terminate() { rec.terminated = true; },
     };
     const rec = {
-      requests: [] as WorkerRequest[],
+      requests: [] as GenerateRequest[],
       terminated: false,
       reply: (msg: WorkerResponse) => w.onmessage?.({ data: msg } as MessageEvent<WorkerResponse>),
       die: () => w.onerror?.({ message: "boom" } as ErrorEvent),

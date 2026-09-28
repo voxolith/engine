@@ -21,10 +21,20 @@ export interface GenerateRequest {
   entityId?: string;
   /** Passed to the generator (a finer voxelsPerMetre, ...). */
   ctx?: GenerateContext;
+  /** `false`: neither read nor write the worker's model cache for this request. */
+  cache?: boolean;
+}
+
+/**
+ * The pool is done with this worker: finish the model-cache writes still in progress, answer
+ * `closed`, and expect to be terminated.
+ */
+export interface CloseRequest {
+  kind: "close";
 }
 
 /** Any message the pool sends a worker. */
-export type WorkerRequest = GenerateRequest;
+export type WorkerRequest = GenerateRequest | CloseRequest;
 
 /**
  * Any message a worker sends the pool: `ready` once, then one `ok` or `error` per request,
@@ -34,4 +44,6 @@ export type WorkerResponse =
   /** Sent once when the worker has registered its generators and can serve. */
   | { kind: "ready"; generators: string[] }
   | { kind: "ok"; id: number; entity: Entity; /** Loaded from the model cache rather than generated. */ cached?: boolean }
-  | { kind: "error"; id: number; message: string };
+  | { kind: "error"; id: number; message: string }
+  /** The answer to a `close`: every cache write has finished, the worker may be terminated. */
+  | { kind: "closed" };

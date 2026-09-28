@@ -13,8 +13,9 @@
 
 import type { EntityModel, RGB, Role, Vec3 } from "./entity";
 import { instancePalette } from "./palette";
-import type { SparseVoxels } from "@voxolith/renderer/core";
+import type { PlacementBake, PlacementInput, PlacementModel, SparseVoxels } from "@voxolith/renderer/core";
 import { LOAD_PHASES, type LoadTask, type LoadTracker } from "./load";
+import type { PlacementWorker } from "./worker/placement";
 
 /** What a renderer offers for instancing; `Renderer` implements it. */
 export interface InstanceTarget {
@@ -36,6 +37,19 @@ export interface InstanceTarget {
   removePalette(base: number, entries: number): void;
   /** Replace the static set, or with `dynamic` only the moving one (cheap per frame). */
   setInstances(list: readonly InstancePlacement[], opts?: { dynamic?: boolean }): void;
+  /**
+   * Optional, for baking the static set on a worker: what the bake reads about model `id`
+   * (`Renderer.placementModel`). A target without all three placement methods always places
+   * synchronously.
+   */
+  placementModel?(id: number): PlacementModel | null;
+  /** Optional: the bake's input for a static set (`Renderer.placementInput`). */
+  placementInput?(list: readonly InstancePlacement[]): PlacementInput;
+  /**
+   * Optional: replace the static set with a baked one (`Renderer.applyPlacement`). Throws when a
+   * model the bake names was removed or replaced since its input was taken.
+   */
+  applyPlacement?(bake: PlacementBake): void;
 }
 
 /** One instance of an uploaded model, as the renderer's `setInstances` takes it. */
@@ -96,7 +110,7 @@ export interface ModelLibraryOptions {
 }
 
 /** A model library plus the hook that closes its current upload span. */
-function modelLibrary(target: InstanceTarget, load: LoadTracker | undefined): { lib: ModelLibrary; settle(): void } {
+function modelLibrary(target: InstanceTarget, load: LoadTracker | undefined, beforeRemove?: (id: number) => void): { lib: ModelLibrary; settle(): void } {
   const ids = new Map<EntityModel, number>();
   let task: LoadTask | undefined;
   const settle = () => {
@@ -122,6 +136,7 @@ function modelLibrary(target: InstanceTarget, load: LoadTracker | undefined): { 
     release(model) {
       const id = ids.get(model);
       if (id === undefined) return;
+      beforeRemove?.(id);
       target.removeModel(id);
       ids.delete(model);
     },
@@ -237,6 +252,28 @@ export interface InstanceLayer {
    * into this layer commits for you.
    */
   commit(): void;
+  /**
+   * {@link InstanceLayer.commit}, with the static set baked on the layer's placement worker
+   * (`makeInstanceLayer(target, { placement })`) instead of on the main thread. The moving set is
+   * sent at once, as by `commit`; the old static set keeps drawing until the new one is applied,
+   * and `commit()` calls meanwhile (a crowd's, every frame) send only the moving set.
+   *
+   * Resolves once the static set of this call, or a newer one, is drawing: at once when it had
+   * not changed. Only the newest bake is applied: a `setStatic` + commit while a bake is in
+   * flight supersedes it (a synchronous `commit()` too), and its result is dropped when it lands.
+   * If a model it names was removed meanwhile, the layer bakes again. Without a placement worker,
+   * or with a target lacking the placement methods, it is `commit()` and resolves at once.
+   *
+   * `signal` drops the pending apply and rejects with `signal.reason` (unless another
+   * `commitAsync` is still waiting for the same bake). The worker skips the bake if it has not
+   * started it; a started one runs to the end, since the bake is one synchronous call. The static
+   * set then counts as unsent: the next `commit()` places it synchronously, the next
+   * `commitAsync()` bakes it again. Rejects too when the bake fails on the worker, with the same
+   * effect.
+   */
+  commitAsync(opts?: { signal?: AbortSignal }): Promise<void>;
+  /** A static bake is in flight on the placement worker. */
+  readonly baking: boolean;
   /** Placements sent last commit. */
   count(): number;
 }
@@ -248,9 +285,21 @@ export interface InstanceLayerOptions {
    * and each static `setInstances` in `commit` under `placement`, with the number of static
    * placements as its total (ticked all at once, since the renderer builds them in one call).
    * An empty static set is not reported. Both block the main thread; see
-   * {@link makeLoadTracker} for what that means for a loading screen.
+   * {@link makeLoadTracker} for what that means for a loading screen. A static set baked on the
+   * placement worker (`commitAsync`) is one `placement` task from the bake request to its apply,
+   * with the main thread free meanwhile. Its total is still the number of static placements, and
+   * its `done` follows the worker's progress (the bake's fraction of that count) but stays below
+   * the total until the apply, which ticks the rest. A superseded, aborted or failed bake leaves
+   * the phase entirely, its progress included.
    */
   load?: LoadTracker;
+  /**
+   * Bake static sets on this worker ({@link makePlacementWorker}) when committed with
+   * `commitAsync()`. The layer sends each model a static set names once (after its upload) and
+   * drops it on the worker when the model is released. Without it, and for `commit()`, the static
+   * set is placed synchronously, as before.
+   */
+  placement?: PlacementWorker;
 }
 
 /**
@@ -260,7 +309,8 @@ export interface InstanceLayerOptions {
  * written into the world's bricks.
  *
  * @param target - A renderer with instancing (`Renderer` implements {@link InstanceTarget}).
- * @param opts - `load` reports uploads and placement into a load tracker.
+ * @param opts - `load` reports uploads and placement into a load tracker; `placement` bakes the
+ *   static set on a worker when committed with `commitAsync()`.
  * @returns The layer; pass it to `makeCrowd` as `instances` for animated members.
  * @example
  * ```ts
@@ -271,12 +321,132 @@ export interface InstanceLayerOptions {
  * ```
  */
 export function makeInstanceLayer(target: InstanceTarget, opts: InstanceLayerOptions = {}): InstanceLayer {
-  const { lib: models, settle: settleUploads } = modelLibrary(target, opts.load);
+  const worker = opts.placement;
+  const canBake = !!worker && !!target.placementModel && !!target.placementInput && !!target.applyPlacement;
+  /** Model id -> the key this layer registered on the worker for it. */
+  const sent = new Map<number, number>();
+  const { lib: models, settle: settleUploads } = modelLibrary(target, opts.load, (id) => {
+    const key = sent.get(id);
+    if (key === undefined) return;
+    sent.delete(id);
+    worker!.drop(key);
+  });
   const palettes = makePaletteLibrary(target);
   let fixed: InstancePlacement[] = [];
   let moving: readonly InstancePlacement[] = [];
   let fixedDirty = true;
-  return {
+  // Static sets are numbered as they are sent; `applied` is the one drawing.
+  let sentGen = 0;
+  let applied = 0;
+  let bake: { gen: number; ctl: AbortController; task?: LoadTask } | undefined;
+  let waiters: { gen: number; resolve: () => void; reject: (e: unknown) => void; detach?: () => void }[] = [];
+
+  const placementTask = (n: number) => (opts.load && n > 0 ? opts.load.task(LOAD_PHASES.placement, n) : undefined);
+
+  /** Settle the waiters `ok` covers (resolved up to `gen`) or every one (rejected with `err`). */
+  function release(gen: number, err?: { reason: unknown }): void {
+    const done = err ? waiters : waiters.filter((w) => w.gen <= gen);
+    waiters = err ? [] : waiters.filter((w) => w.gen > gen);
+    for (const w of done) {
+      w.detach?.();
+      if (err) w.reject(err.reason);
+      else w.resolve();
+    }
+  }
+
+  /**
+   * Drop the bake in flight: its result will be ignored, and its load task leaves the phase
+   * (progress it ticked included, since none of it was placed).
+   */
+  function cancelBake(): void {
+    if (!bake) return;
+    const b = bake;
+    bake = undefined;
+    b.task?.discard();
+    b.ctl.abort();
+  }
+
+  function placeSync(): void {
+    cancelBake();
+    const task = placementTask(fixed.length);
+    try {
+      target.setInstances(fixed);
+      task?.tick(fixed.length);
+    } finally {
+      task?.end();
+    }
+    applied = ++sentGen;
+    release(applied);
+  }
+
+  /** A model the input names was removed or replaced since it was taken. */
+  const stale = (input: PlacementInput) => input.models.some((key, id) => key && target.placementModel!(id)?.key !== key);
+
+  function startBake(): void {
+    cancelBake();
+    const gen = ++sentGen;
+    const b = { gen, ctl: new AbortController(), task: placementTask(fixed.length) };
+    bake = b;
+    const list = fixed;
+    // The worker's progress, as instances: `done` follows the bake's fraction of the set but
+    // stays below the whole until the apply, so the phase never reads complete before the new
+    // set draws. A retried bake starts from 0 again; the count only goes up.
+    let ticked = 0;
+    const onProgress = (done: number, total: number) => {
+      if (bake !== b || !b.task || total <= 0) return;
+      const n = Math.min(list.length - 1, Math.round((Math.min(done, total) / total) * list.length));
+      if (n > ticked) {
+        b.task.tick(n - ticked);
+        ticked = n;
+      }
+    };
+    const attempt = async (tries: number): Promise<void> => {
+      const input = target.placementInput!(list);
+      input.models.forEach((key, id) => {
+        if (!key || sent.get(id) === key) return;
+        const m = target.placementModel!(id);
+        if (!m) return;
+        const old = sent.get(id);
+        if (old !== undefined) worker!.drop(old);
+        worker!.register(m);
+        sent.set(id, m.key);
+      });
+      let result: PlacementBake;
+      try {
+        result = await worker!.bake(input, { signal: b.ctl.signal, onProgress });
+      } catch (err) {
+        if (bake !== b) return; // superseded or aborted: already settled
+        // A model removed after the input was taken fails the bake on the worker: take the input
+        // again. Any other failure would only repeat.
+        if (stale(input) && tries < 8) return attempt(tries + 1);
+        fail(err);
+        return;
+      }
+      if (bake !== b) return; // a newer static set was sent meanwhile: drop this one
+      try {
+        target.applyPlacement!(result);
+      } catch (err) {
+        // A model it names was removed or replaced since the input: bake again.
+        if (stale(input) && tries < 8) return attempt(tries + 1);
+        fail(err);
+        return;
+      }
+      bake = undefined;
+      b.task?.tick(list.length - ticked);
+      b.task?.end();
+      applied = gen;
+      release(gen);
+    };
+    const fail = (err: unknown) => {
+      bake = undefined;
+      b.task?.discard();
+      fixedDirty = true;
+      release(0, { reason: err });
+    };
+    void attempt(0);
+  }
+
+  const layer: InstanceLayer = {
     target,
     models,
     palettes,
@@ -292,17 +462,49 @@ export function makeInstanceLayer(target: InstanceTarget, opts: InstanceLayerOpt
       // Scenery is sent once; the moving set every commit.
       if (fixedDirty) {
         settleUploads();
-        const task = opts.load && fixed.length > 0 ? opts.load.task(LOAD_PHASES.placement, fixed.length) : undefined;
-        try {
-          target.setInstances(fixed);
-          task?.tick(fixed.length);
-        } finally {
-          task?.end();
-        }
+        placeSync();
         fixedDirty = false;
       }
       target.setInstances(moving, { dynamic: true });
     },
+    commitAsync(o = {}) {
+      if (!canBake) {
+        layer.commit();
+        return Promise.resolve();
+      }
+      const signal = o.signal;
+      if (signal?.aborted) return Promise.reject(signal.reason);
+      if (fixedDirty) {
+        settleUploads();
+        fixedDirty = false;
+        startBake();
+      }
+      target.setInstances(moving, { dynamic: true });
+      if (applied >= sentGen) return Promise.resolve();
+      const gen = sentGen;
+      return new Promise<void>((resolve, reject) => {
+        const w: (typeof waiters)[number] = { gen, resolve, reject };
+        if (signal) {
+          const onAbort = () => {
+            if (!waiters.includes(w)) return;
+            waiters = waiters.filter((x) => x !== w);
+            reject(signal.reason);
+            // Nobody waits for the bake any more: drop it, and the static set counts as unsent.
+            if (waiters.length === 0 && bake) {
+              cancelBake();
+              fixedDirty = true;
+            }
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          w.detach = () => signal.removeEventListener("abort", onAbort);
+        }
+        waiters.push(w);
+      });
+    },
+    get baking() {
+      return !!bake;
+    },
     count: () => fixed.length + moving.length,
   };
+  return layer;
 }
