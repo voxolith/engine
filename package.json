@@ -30,20 +30,31 @@
     "./input": "./src/input/index.ts",
     "./atmosphere": "./src/atmosphere/index.ts",
     "./animation": "./src/animation/index.ts",
-    "./vox": "./src/vox.ts"
+    "./vox": "./src/vox.ts",
+    "./pwa": "./src/pwa/index.ts",
+    "./vite": "./src/pwa/vite.ts"
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "verify": "bun tools/verify.ts && bun tools/verify-input.ts && bun tools/verify-atmosphere.ts && bun tools/verify-animation.ts && bun tools/verify-dynamic.ts && bun tools/verify-instances.ts && bun tools/verify-load.ts && bun tools/verify-pool.ts && bun tools/verify-placement.ts"
+    "verify": "bun tools/verify.ts && bun tools/verify-input.ts && bun tools/verify-atmosphere.ts && bun tools/verify-animation.ts && bun tools/verify-dynamic.ts && bun tools/verify-chunks.ts && bun tools/verify-instances.ts && bun tools/verify-load.ts && bun tools/verify-pool.ts && bun tools/verify-placement.ts && bun tools/verify-scene.ts && bun tools/verify-scene-cache.ts && bun tools/verify-pwa.ts"
   },
   "dependencies": {
     "@voxolith/renderer": "workspace:*"
   },
+  "peerDependencies": {
+    "vite": ">=8"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/node": "^26.6.2",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
   }
 }

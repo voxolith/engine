@@ -6,7 +6,8 @@
 - placement, scatter and palettes;
 - chunked streaming (`makeChunkedWorld`) and instance layers (`makeInstanceLayer`);
 - input (`./input`), atmosphere (`./atmosphere`) and animation (`./animation`: rigs, clips,
-  crowds, damage).
+  crowds, damage);
+- the apps' service worker: a build-time Vite plugin (`./vite`) and its registration (`./pwa`).
 
 It never authors models: generators bake them, the engine consumes them.
 
@@ -14,7 +15,7 @@ It never authors models: generators bake them, the engine consumes them.
 
 ```sh
 bun run --cwd engine typecheck
-bun run --cwd engine verify   # verify, -input, -atmosphere, -animation, -dynamic, -instances, -load, -pool, -placement
+bun run --cwd engine verify   # verify, -input, -atmosphere, -animation, -dynamic, -chunks, -instances, -load, -pool, -placement, -scene, -scene-cache, -pwa
 ```
 
 CI (`ci.yml`, job `typecheck`) runs both, with `renderer` checked out alongside.
@@ -24,19 +25,38 @@ CI (`ci.yml`, job `typecheck`) runs both, with `renderer` checked out alongside.
 - `src/entity.ts`, `src/palette.ts` (`PaletteAllocator`), `src/generator.ts` (the
   `EntityGenerator` contract, `GenerateContext`, `refinement`), `src/share.ts` (share codes),
   `src/variants.ts`, `src/orient.ts` (`orientationYaw`).
-- `src/chunks.ts` (streaming), `src/instances.ts` (the instance layer, `palettes.of`),
+- `src/chunks.ts` (streaming; `pendingWithin` / `readyAround` / `whenReady` for "built around a
+  point"; `fill` takes a `ChunkFillSource` and applies chunks filled elsewhere, `columnBoxes`), `src/instances.ts` (the instance layer, `palettes.of`; `EntityPlacement.scale` draws a
+  coarse model enlarged, one renderer model per model and scale, and a new static set releases
+  the models the drawn one no longer names, after it draws: coarse first, one swap; a target with `beginEncodedModel` gets big models added in slices within `uploadBudgetMs` per frame, keys registered and baked only once a model is done),
   `src/dynamic.ts` (`makeBrickStamper`: movers in a streamed world, keeping per brick only
   the cells it overwrote), `src/scatter.ts`, `src/sink.ts`, `src/vox.ts`.
 - `src/worker/`: `makeGeneratorPool` (priority, abort, pause, reprioritise; `destroy()` lets idle
   workers finish their cache writes), `serveGenerators({ cache })` (the IndexedDB model cache) and
   `openModelCacheControls` (inspect, clear, trim; the logic runs on a `CacheStore`, tested in memory).
-  `makePlacementWorker` / `servePlacement`: the static placement bake on a worker of its own, for
-  `makeInstanceLayer(target, { placement })` and `layer.commitAsync()`.
+  `maxBytes` is checked (`checkCacheCap`: not positive and finite throws) and watched
+  (`watchCacheCap`: under 16 MiB, above the quota, an entry bigger than the cap warn once per cache).
+  `makeChunkFillPool` / `serveChunks` (`chunks.ts`): ground chunks filled on workers from an
+  opaque `init`, for `makeChunkedWorld({ fill })`.
+  `makeSceneWorker` / `serveScene` (`scene.ts`): model encoding (`encodeModel`) and the static
+  placement bake on one worker, for `makeInstanceLayer(target, { worker })` and
+  `layer.commitAsync()`; the worker keeps each encoding's sub-cells, so registering it for
+  placement sends only keys. `makePlacementWorker` / `servePlacement` (`placement.ts`) are its
+  older, bake-only names (deprecated), for `{ placement }`.
+  `serveScene({ cache })` keeps encodings and bakes in IndexedDB (`scene-cache.ts`, on the same
+  `CacheStore` as the model cache; `openSceneCacheControls`): encodings by the model's identity
+  (`makeInstanceLayer({ modelKey: pool.modelKey })`, or `hashModels`), bakes by a digest of the
+  input and the models' placement data (`hash.ts`), stored `normalizePlacement`d and bound with `bindPlacement`, since the
+  renderer numbers models by free slot. Generator workers post entities packed (`PackedEntity`,
+  one transferred buffer); transferring one buffer per brick took seconds.
 - `src/input/`: `createInput`, `prepareSurface`, orbit and look controllers, gestures, actions
   and touch controls.
 - `src/atmosphere/`: `timeOfDay`, `ATMOSPHERES`, blending, `atmosphereFrame`.
 - `src/animation/`: animator, pose, bake (`bakePose`), cache, crowd (`makeCrowd`), damage
   (`wound`, `sever`).
+- `src/pwa/`: `vite.ts` (`serviceWorker()`, the plugin; type-only `vite` import), `sw.ts` (the
+  worker's source as a template, internal), `index.ts` + `register.ts` (`registerServiceWorker`).
+  `verify-pwa` runs the plugin on a fake bundle and the emitted `sw.js` on fake `caches`/`fetch`.
 - `tools/verify-*.ts`: headless checks, one per area.
 
 ## Invariants

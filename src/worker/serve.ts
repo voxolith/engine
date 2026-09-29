@@ -16,32 +16,14 @@
 // resolves it locally.
 
 import { seededRandom } from "@voxolith/renderer/core";
-import type { Entity } from "../entity";
 import { getGenerator, listGenerators } from "../generator";
 import type { WorkerRequest, WorkerResponse } from "./protocol";
-import { openModelCache, openModelCacheOn, type CacheStore, type ModelCache, type ModelCacheOptions } from "./cache";
+import { checkCacheCap, openModelCache, openModelCacheOn, packEntity, type CacheStore, type PackedEntity, type ModelCache, type ModelCacheOptions } from "./cache";
 
 /** Minimal shape of the worker global, so this file needs no DOM lib. */
 interface WorkerScope {
   onmessage: ((ev: { data: WorkerRequest }) => void | Promise<void>) | null;
   postMessage(message: WorkerResponse, transfer?: Transferable[]): void;
-}
-
-/**
- * Transferring a buffer detaches it, which is what makes handing a model back
- * free rather than a copy — but only when the array owns its whole buffer. A
- * view into a larger buffer would take unrelated data with it, so those are
- * copied instead.
- */
-function transferables(entity: Entity): Transferable[] {
-  const out: Transferable[] = [];
-  const own = (a: Uint8Array) => a.byteOffset === 0 && a.byteLength === a.buffer.byteLength && a.byteLength > 0;
-  const d = entity.model.data;
-  if (own(d)) out.push(d.buffer);
-  // A sparse model is a map of 512-byte bricks; each is its own buffer.
-  if (entity.model.sparse) for (const b of entity.model.sparse.bricks.values()) if (own(b)) out.push(b.buffer);
-  if (entity.model.bones && own(entity.model.bones)) out.push(entity.model.bones.buffer);
-  return out;
 }
 
 /** Options for {@link serveGenerators}. */
@@ -59,6 +41,9 @@ export interface ServeOptions {
    * Opening the cache deletes every entry stored under another salt (an older build of this
    * worker), so give each worker script its own database name: two apps on one origin (GitHub
    * Pages serves every repo from one) sharing a name would delete each other's models.
+   *
+   * A `maxBytes` that is not a positive finite number makes `serveGenerators` throw; doubtful ones
+   * warn ({@link ModelCacheOptions.maxBytes}).
    */
   cache?: string | ServeCacheOptions;
 }
@@ -78,8 +63,10 @@ export interface ServeCacheOptions extends ModelCacheOptions {
  * Serve generate requests on this worker until it is terminated. Call after
  * registering the generators this worker should offer: the pool sends a generator id, and a
  * function cannot cross the worker boundary, so the registry must be filled here. Posts a
- * `ready` message listing the registered ids, then answers each request with the entity (its
- * buffers transferred) or an error.
+ * `ready` message listing the registered ids, then answers each request with the entity (packed
+ * into one buffer and transferred, see {@link PackedEntity}; the pool unpacks it) or an error.
+ * Each answer also names what made the model (`key`: this worker's URL, generator id and version,
+ * seed, params and context), which the pool hands out as `GeneratorPool.modelKey`.
  *
  * With `cache`, models are kept in IndexedDB keyed by generator id and version, seed, params
  * and context, salted with this worker's URL, so a production build (which hashes the URL)
@@ -103,6 +90,8 @@ export function serveGenerators(opts: ServeOptions | WorkerScope = {}): void {
   // model made by older generator code is never served.
   const salt = String((globalThis as { location?: { href: string } }).location?.href ?? "worker");
   const spec = typeof o.cache === "string" ? { name: o.cache } : o.cache;
+  // A bad cap is a programming error: fail here, loudly, rather than in every request.
+  checkCacheCap(spec?.maxBytes, "serveGenerators({ cache })");
   const cacheOpts = { maxBytes: spec?.maxBytes };
   const cache: Promise<ModelCache | null> = spec?.store
     ? openModelCacheOn(spec.store, salt, cacheOpts)
@@ -132,22 +121,27 @@ export function serveGenerators(opts: ServeOptions | WorkerScope = {}): void {
       }
       const store = req.cache === false ? null : await cache;
       const key = `${gen.id}@${gen.version}|${req.seed}|${JSON.stringify(req.params)}|${JSON.stringify(req.ctx ?? {})}`;
-      const hit = store ? await store.get(key) : undefined;
+      // What made the model, for hosts that cache what they derive from it (GeneratorPool.modelKey).
+      const identity = `${salt}|${key}`;
+      const hit = store ? await store.getPacked(key) : undefined;
       if (hit) {
-        if (req.entityId) hit.id = req.entityId;
-        scope.postMessage({ kind: "ok", id: req.id, entity: hit, cached: true }, transferables(hit));
+        if (req.entityId) (hit.head.entity as { id?: string }).id = req.entityId;
+        scope.postMessage({ kind: "ok", id: req.id, packed: hit, cached: true, key: identity }, [hit.bytes.buffer]);
         return;
       }
       const entity = gen.generate(req.params as never, seededRandom(req.seed), req.ctx);
       if (req.entityId) entity.id = req.entityId;
-      // put() packs a copy before it first awaits, so the buffers can be
-      // handed over straight away while it compresses and stores.
+      // Posted packed: one buffer transfers in no time, where a sparse model's bricks, each its
+      // own buffer, took seconds to (7 s for nightwood's twelve models at 100 vox/m).
+      const packed = packEntity(entity);
+      // putPacked() copies the bytes before it first awaits, so they can be handed over
+      // straight away while it compresses and stores.
       if (store) {
-        const w = store.put(key, entity, { generator: gen.id });
+        const w = store.putPacked(key, packed, { generator: gen.id });
         writes.add(w);
         void w.finally(() => writes.delete(w));
       }
-      scope.postMessage({ kind: "ok", id: req.id, entity }, transferables(entity));
+      scope.postMessage({ kind: "ok", id: req.id, packed, key: identity }, [packed.bytes.buffer]);
     } catch (err) {
       scope.postMessage({
         kind: "error",

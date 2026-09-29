@@ -11,10 +11,11 @@
 // It also gives the app controls over that queue (priority, cancelling, pausing),
 // and picks no policy with them: without options it behaves as a plain FIFO.
 
-import type { Entity } from "../entity";
+import type { Entity, EntityModel } from "../entity";
 import type { GenerateContext } from "../generator";
 import type { GenerateRequest, WorkerResponse } from "./protocol";
 import { LOAD_PHASES, type LoadTask, type LoadTracker } from "../load";
+import { unpackEntity } from "./cache";
 
 /** Options for {@link makeGeneratorPool}. */
 export interface GeneratorPoolOptions {
@@ -146,6 +147,20 @@ export interface GeneratorPool {
   readonly paused: boolean;
   /** Results that came from a worker's model cache (see serveGenerators' `cache`). */
   readonly cached: number;
+  /**
+   * What produced a model this pool returned, as a string: the worker script's URL (hashed in
+   * production builds, so it changes with the generator code), the generator id and version,
+   * seed, parameters and context. Undefined for any other model. Deterministic generation makes
+   * it a stable name for the model's content across visits, which is what a cache of anything
+   * derived from the model needs: give it to `makeInstanceLayer(target, { worker, modelKey:
+   * pool.modelKey })` and a scene worker with a cache keeps each model's encoding under it.
+   *
+   * It names the model as generated: a host that edits a model in place must not pass its key
+   * on. In development the worker URL does not change with the code, so keys stay the same
+   * across generator edits (leave derived caches off there, as for the model cache). A bound
+   * function: pass it around as it is. Works after `destroy()`.
+   */
+  readonly modelKey: (model: EntityModel) => string | undefined;
 }
 
 interface Slot {
@@ -235,6 +250,8 @@ export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
   let paused = false;
   let cachedCount = 0;
   let live = 0; // running requests that are not aborted
+  /** What made each model returned (the workers' `key`). */
+  const keys = new WeakMap<EntityModel, string>();
 
   const before = (a: Job, b: Job) => a.priority > b.priority || (a.priority === b.priority && a.seq < b.seq);
   function enqueue(job: Job): void {
@@ -284,7 +301,16 @@ export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
         finish(job, { cached: hit });
         if (msg.kind === "ok") {
           if (hit) cachedCount++;
-          job.resolve(msg.entity);
+          let entity: Entity;
+          try {
+            // Views into the one posted buffer: a Map entry per brick, no copies.
+            entity = msg.packed ? unpackEntity(msg.packed.head, msg.packed.bytes, { views: true }) : msg.entity!;
+          } catch (err) {
+            job.reject(err);
+            return;
+          }
+          if (msg.key) keys.set(entity.model, msg.key);
+          job.resolve(entity);
         } else job.reject(new Error(msg.message));
       };
       worker.onerror = (ev: ErrorEvent) => {
@@ -383,6 +409,7 @@ export function makeGeneratorPool(opts: GeneratorPoolOptions): GeneratorPool {
     get cached() {
       return cachedCount;
     },
+    modelKey: (model) => keys.get(model),
     ready: async () => {
       await Promise.all(slots.map((s) => s.ready));
     },

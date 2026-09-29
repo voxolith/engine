@@ -15,7 +15,8 @@
  * - `shaders`: linking the renderer's shader modules ({@link trackRenderer}).
  * - `pipelines`: creating the renderer's pipelines, one tick per variant ({@link trackRenderer}).
  * - `models`: generating (or loading from the cache) entities on the generator pool.
- * - `upload`: first-sight `addModel` uploads in an instance layer's model library.
+ * - `upload`: first-sight model uploads in an instance layer's model library: one per model with
+ *   `addModel` on the main thread, or in bricks per model when encoded on a scene worker.
  * - `placement`: an instance layer's static placement (the per-cell lists and tables), from
  *   `commit()`, or from the bake request to the apply with `commitAsync()`.
  * - `ground`: chunks built by a chunked world.
@@ -33,6 +34,32 @@ export const LOAD_PHASES = {
 export type LoadPhase = (typeof LOAD_PHASES)[keyof typeof LOAD_PHASES];
 
 /**
+ * Names for moments a page records with {@link LoadTracker.mark}. The engine records none of them
+ * itself: when a page counts as drawn or settled is the page's call, so it marks them. Marks are
+ * plain strings, so an app adds its own (`"playable"`) beside these.
+ *
+ * - `firstFrame`: the page's first picture of its scene has been submitted (where a loading
+ *   screen would lift).
+ * - `converged`: after the first frame, the picture has stopped converging for the first time
+ *   (`renderer.converging()` first reads false), so what is on screen is the settled image.
+ */
+export const LOAD_MARKS = {
+  firstFrame: "first-frame",
+  converged: "converged",
+} as const;
+
+/** One of the engine's own mark names ({@link LOAD_MARKS}). */
+export type LoadMarkName = (typeof LOAD_MARKS)[keyof typeof LOAD_MARKS];
+
+/** A moment recorded with {@link LoadTracker.mark}, sent to {@link LoadTracker.onMark} listeners. */
+export interface LoadMark {
+  /** The mark, e.g. one of {@link LOAD_MARKS} or an app's own. */
+  name: string;
+  /** When it happened, in ms since the tracker was made (add {@link LoadTracker.origin} for `performance.now()` time). */
+  t: number;
+}
+
+/**
  * One change to a phase, sent to {@link LoadTracker.on} listeners. The counts are the phase's
  * running totals after the change (every task on the phase, over its whole life), not deltas.
  */
@@ -48,7 +75,7 @@ export interface LoadEvent {
   done: number;
   /** Items expected in this phase so far. It may grow; it never drops below `done`. */
   total: number;
-  /** Of `done`, how many came from a cache (models served by the model cache). */
+  /** Of `done`, how many came from a cache (models served by the model cache; encodings and bakes by the scene worker's). */
   cached: number;
   /** Detail of the tick that caused this event, e.g. a generator id or a pipeline variant. */
   label?: string;
@@ -124,13 +151,20 @@ export interface LoadSnapshot {
 }
 
 /**
- * One phase of the load timeline, from {@link LoadTracker.timeline}. A phase that reopened
- * (streaming ground, a pipeline compiled lazily on a later frame) keeps one entry: `start` is
- * its first start, `end` its latest end, and `busy` / `spans` say how much of that stretch it
- * actually worked.
+ * One row of the load timeline, from {@link LoadTracker.timeline}: a phase or a mark.
+ *
+ * A phase that reopened (streaming ground, a pipeline compiled lazily on a later frame) keeps one
+ * entry: `start` is its first start, `end` its latest end, and `busy` / `spans` say how much of
+ * that stretch it actually worked.
+ *
+ * A mark ({@link LoadTracker.mark}) is a row of zero length: `phase` holds its name, `start` and
+ * `end` its time, and the counts are 0. So a reader that predates marks sees a phase that took no
+ * time, and one that knows tells them apart by `kind`.
  */
 export interface TimelineEntry {
-  /** The phase name. */
+  /** `phase` for a phase, `mark` for a moment recorded with {@link LoadTracker.mark}. */
+  kind: "phase" | "mark";
+  /** The phase name, or the mark's name. */
   phase: string;
   /** First start, ms since the tracker was made. */
   start: number;
@@ -174,8 +208,34 @@ export interface LoadTracker {
    * off.
    */
   idle(phase?: string): Promise<void>;
-  /** The load timeline: one entry per phase, in the order they first started. */
+  /**
+   * The load timeline: one entry per phase and one per mark, in time order (phases by their first
+   * start, marks by their time).
+   */
   timeline(): TimelineEntry[];
+  /**
+   * Record a moment, e.g. `load.mark(LOAD_MARKS.firstFrame)` at the page's first picture. `t` is
+   * the time in ms since the tracker was made (default now; see {@link LoadTracker.now}), for a
+   * moment noticed later than it happened. A name may be marked more than once; every mark is
+   * kept. Marks are not phases: they never make the tracker busy, never show in `snapshot()` and
+   * do not reach {@link LoadTracker.on} listeners (listen with {@link LoadTracker.onMark}).
+   */
+  mark(name: string, t?: number): void;
+  /** Every mark so far, in time order. */
+  marks(): LoadMark[];
+  /**
+   * Listen to marks. Returns an unsubscribe. A listener that throws is logged with
+   * `console.error`, as for {@link LoadTracker.on}.
+   */
+  onMark(fn: (m: LoadMark) => void): () => void;
+  /** Milliseconds since the tracker was made: the time base of every event, entry and mark. */
+  now(): number;
+  /**
+   * The `performance.now()` at which the tracker was made. Add it to any tracker time to get
+   * `performance.now()` time, e.g. to line long tasks from a `PerformanceObserver` up with the
+   * marks: `lt.startTime > load.origin + firstFrame.t`.
+   */
+  readonly origin: number;
 }
 
 interface Phase {
@@ -202,10 +262,10 @@ interface Phase {
  * the stall lets a frame paint first, then calls the blocking step:
  * `await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)))`. A bare
  * `requestAnimationFrame` is not enough, because code resuming from its callback still runs
- * before that frame is painted. Two of those steps need not block at all: the renderer's
- * `prepare()` (with `deferPipelines`) compiles pipelines asynchronously, and an instance layer's
- * `commitAsync()` bakes placement on a worker. Their phases then span the real work while the
- * page keeps drawing.
+ * before that frame is painted. Three of those steps need not block at all: the renderer's
+ * `prepare()` (with `deferPipelines`) compiles pipelines asynchronously, and an instance layer
+ * with a scene worker encodes its models there and its `commitAsync()` bakes placement there
+ * too. Their phases then span the real work while the page keeps drawing.
  *
  * @example
  * ```ts
@@ -229,6 +289,8 @@ export function makeLoadTracker(): LoadTracker {
   const phases = new Map<string, Phase>();
   let listeners: ((e: LoadEvent) => void)[] = [];
   let waiters: { phase?: string; resolve: () => void }[] = [];
+  const markList: LoadMark[] = [];
+  let markListeners: ((m: LoadMark) => void)[] = [];
 
   function emit(p: Phase, kind: LoadEvent["kind"], label?: string, t = now()): void {
     if (listeners.length === 0) return;
@@ -353,8 +415,9 @@ export function makeLoadTracker(): LoadTracker {
 
     timeline() {
       const t = now();
-      return [...phases.values()].map((p) => {
+      const rows = [...phases.values()].map((p) => {
         const e: TimelineEntry = {
+          kind: "phase",
           phase: p.name,
           start: p.start,
           busy: p.busyMs + (p.open > 0 ? t - p.since : 0),
@@ -366,7 +429,39 @@ export function makeLoadTracker(): LoadTracker {
         if (p.end !== undefined) e.end = p.end;
         return e;
       });
+      for (const m of markList) {
+        rows.push({ kind: "mark", phase: m.name, start: m.t, end: m.t, busy: 0, spans: 0, done: 0, total: 0, cached: 0 });
+      }
+      // Stable, so phases keep their first-start order and a mark lands after a phase that
+      // started at the same instant.
+      return rows.sort((a, b) => a.start - b.start);
     },
+
+    mark(name, t = now()) {
+      const m: LoadMark = { name, t };
+      let i = markList.length;
+      while (i > 0 && markList[i - 1].t > t) i--;
+      markList.splice(i, 0, m);
+      for (const fn of markListeners) {
+        try {
+          fn({ ...m });
+        } catch (err) {
+          console.error(`voxolith: a mark listener threw on "${name}"`, err);
+        }
+      }
+    },
+
+    marks: () => markList.map((m) => ({ ...m })),
+
+    onMark(fn) {
+      markListeners = [...markListeners, fn];
+      return () => {
+        markListeners = markListeners.filter((l) => l !== fn);
+      };
+    },
+
+    now,
+    origin: t0,
   };
 }
 
@@ -408,7 +503,8 @@ export function trackRenderer(load: LoadTracker): RendererLoadCallback {
 /**
  * The load timeline as a plain-text table, one line per phase: when it started, how long it
  * took from first start to latest end (and how much of that it was busy, when it reopened),
- * done/total and cache hits. For logs and `?perf`, not for display.
+ * done/total and cache hits. A mark is one line too, with `mark` for its length. For logs and
+ * `?perf`, not for display.
  *
  * @example
  * ```ts
@@ -416,12 +512,13 @@ export function trackRenderer(load: LoadTracker): RendererLoadCallback {
  * // phase         start      took    done/total  cached
  * // shaders          0 ms    41 ms         1/1
  * // models          52 ms  1830 ms       12/12      12
+ * // first-frame   1904 ms     mark
  * ```
  */
 export function formatTimeline(entries: readonly TimelineEntry[]): string {
   const ms = (v: number) => `${Math.round(v)} ms`;
   const rows = entries.map((e) => {
-    const took = e.end === undefined ? "running" : ms(e.end - e.start);
+    const took = e.kind === "mark" ? "mark" : e.end === undefined ? "running" : ms(e.end - e.start);
     const busy = e.spans > 1 ? `busy ${ms(e.busy)} in ${e.spans} spans` : "";
     return [e.phase, ms(e.start), took, e.total ? `${e.done}/${e.total}` : "", e.cached ? String(e.cached) : "", busy];
   });

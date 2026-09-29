@@ -10,7 +10,7 @@
  * {@link scatterRegion} build large worlds a chunk at a time, {@link makeInstanceLayer} draws
  * models by reference at any yaw, and {@link makeBrickStamper} moves things through the bricks.
  * {@link makeLoadTracker} collects load progress by phase from those loaders, for an app's own
- * loading screen and for timing the load.
+ * loading screen and for timing the load, and the moments a page marks ({@link LOAD_MARKS}).
  * Share codes ({@link encodeState}, {@link decodeState}) rebuild a generated model from a short
  * string.
  *
@@ -23,6 +23,8 @@
  * - `@voxolith/engine/input`: pointer, keyboard, gamepad and touch input (DOM)
  * - `@voxolith/engine/atmosphere`: time of day and weather
  * - `@voxolith/engine/animation`: rigs, clips, poses, crowds and damage
+ * - `@voxolith/engine/vite`: a Vite plugin that emits an app's service worker (build side)
+ * - `@voxolith/engine/pwa`: registering that service worker (browser side)
  *
  * The engine consumes baked models; it does not author them. The authoring
  * toolkit (volumes, rasterisers, noise, branch growth, canopy carving) and the
@@ -39,16 +41,16 @@ export type { Orientation } from "./orient";
 export { ORIENTATIONS, orientAnchor, orientModel, orientVoxel, orientedSize, swapsXZ } from "./orient";
 export type { GeneratorState } from "./share";
 export { clampToSpec, decodeState, encodeState, fingerprint, generateFromState, readParams } from "./share";
-export type { Box, ChunkContext, ChunkedWorld, ChunkedWorldOptions } from "./chunks";
-export { makeChunkedWorld } from "./chunks";
+export type { Box, ChunkContext, ChunkedWorld, ChunkedWorldOptions, ChunkFillSource, ChunkRef, FilledBricks } from "./chunks";
+export { columnBoxes, makeChunkedWorld } from "./chunks";
 export type { ScatterOptions, ScatterPoint } from "./scatter";
 export { scatterRegion } from "./scatter";
 export type { BrickTarget } from "./sink";
 export { makeBrickStamper, toSprite } from "./dynamic";
 export { makeInstanceLayer, makeModelLibrary, makePaletteLibrary, orientationYaw } from "./instances";
-export type { EntityPlacement, InstanceLayer, InstanceLayerOptions, InstancePlacement, InstanceTarget, ModelLibrary, ModelLibraryOptions, PaletteLibrary } from "./instances";
-export { LOAD_PHASES, formatTimeline, makeLoadTracker, trackRenderer } from "./load";
-export type { LoadEvent, LoadPhase, LoadSnapshot, LoadTask, LoadTickInfo, LoadTracker, PhaseState, RendererLoadCallback, TimelineEntry } from "./load";
+export type { EntityPlacement, InstanceLayer, InstanceLayerOptions, InstancePlacement, InstanceTarget, ModelLibrary, ModelLibraryOptions, PaletteLibrary, TargetModelOptions, TargetPendingModel } from "./instances";
+export { LOAD_MARKS, LOAD_PHASES, formatTimeline, makeLoadTracker, trackRenderer } from "./load";
+export type { LoadEvent, LoadMark, LoadMarkName, LoadPhase, LoadSnapshot, LoadTask, LoadTickInfo, LoadTracker, PhaseState, RendererLoadCallback, TimelineEntry } from "./load";
 export type { BrickStamper, MultiBrickTarget, Sprite, StampStats } from "./dynamic";
 export { blitModelToBricks } from "./sink";
 export type { Variant, VariantPool, VariantPoolOptions } from "./variants";

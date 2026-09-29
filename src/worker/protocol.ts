@@ -5,6 +5,7 @@
 
 import type { Entity } from "../entity";
 import type { GenerateContext } from "../generator";
+import type { PackedEntity } from "./cache";
 
 /** The pool's request to a worker: one entity to generate. */
 export interface GenerateRequest {
@@ -43,7 +44,25 @@ export type WorkerRequest = GenerateRequest | CloseRequest;
 export type WorkerResponse =
   /** Sent once when the worker has registered its generators and can serve. */
   | { kind: "ready"; generators: string[] }
-  | { kind: "ok"; id: number; entity: Entity; /** Loaded from the model cache rather than generated. */ cached?: boolean }
+  | {
+      kind: "ok";
+      id: number;
+      /** The entity, as generated (an older worker's form; `packed` is posted instead now). */
+      entity?: Entity;
+      /**
+       * The entity packed into one buffer ({@link PackedEntity}), transferred: a sparse model's
+       * bricks as one array rather than one buffer each, which postMessage moves far faster.
+       */
+      packed?: PackedEntity;
+      /** Loaded from the model cache rather than generated. */
+      cached?: boolean;
+      /**
+       * What produced the model: the worker's script URL, generator id and version, seed,
+       * parameters and context. The model cache's key; the pool hands it out as
+       * `GeneratorPool.modelKey`.
+       */
+      key?: string;
+    }
   | { kind: "error"; id: number; message: string }
   /** The answer to a `close`: every cache write has finished, the worker may be terminated. */
   | { kind: "closed" };

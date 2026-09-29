@@ -12,6 +12,8 @@
 import { LOAD_PHASES, makeLoadTracker, type LoadEvent } from "../src/load";
 import { makeGeneratorPool } from "../src/worker/pool";
 import { serveGenerators } from "../src/worker/serve";
+import { serveScene } from "../src/worker/scene";
+import { makeSceneCache } from "../src/worker/scene-cache";
 import {
   makeModelCache,
   makeModelCacheControls,
@@ -297,6 +299,126 @@ console.log("serveGenerators:");
   await w2.send({ kind: "generate", id: 3, generator: "test/box", params: {}, seed: 8, cache: false });
   ok(!(w2.out[2] as { cached?: boolean }).cached && generated === 3 && (await inner.list()).length === 1, "cache: false neither reads nor writes");
   clearGenerators();
+}
+
+console.log("packed transport and model keys:");
+{
+  clearGenerators();
+  // A sparse model of many bricks, each its own buffer, as a generator makes it.
+  const sparseEntity = (seed: number): Entity => {
+    const bricks = new Map<number, Uint8Array>();
+    for (let k = 0; k < 300; k++) {
+      const b = new Uint8Array(512);
+      for (let i = 0; i < 512; i += 7) b[i] = 1 + ((k * 31 + i + seed) % 5);
+      bricks.set(k * 3 + (seed % 3), b);
+    }
+    const size = { x: 80, y: 80, z: 80 };
+    return { id: "s", kind: "test", meta: { seed }, model: { size, data: new Uint8Array(0), sparse: { size, bricks }, anchor: [0, 0, 0], roles: [] } } as unknown as Entity;
+  };
+  registerGenerator({ id: "test/sparse", name: "sparse", version: "3", roles: [], defaults: {}, params: [], generate: (_p, rng) => sparseEntity(Math.floor(rng() * 1000)) });
+  const store = memoryCacheStore();
+  const transfers: number[] = [];
+  // serveGenerators behind a fake channel that structured-clones with the transfer list, as postMessage does.
+  const spawn = () => {
+    let toMain: ((ev: MessageEvent<WorkerResponse>) => void) | null = null;
+    const scope = {
+      onmessage: null as ((ev: { data: WorkerRequest }) => void | Promise<void>) | null,
+      postMessage(m: WorkerResponse, transfer: Transferable[] = []) {
+        if (m.kind === "ok") transfers.push(transfer.length);
+        const copy = structuredClone(m, { transfer: transfer as Transferable[] });
+        setTimeout(() => toMain?.({ data: copy } as MessageEvent<WorkerResponse>), 0);
+      },
+    };
+    serveGenerators({ scope, cache: { store } });
+    return {
+      set onmessage(fn: typeof toMain) { toMain = fn; },
+      onerror: null,
+      postMessage(m: WorkerRequest) { setTimeout(() => void scope.onmessage?.({ data: structuredClone(m) }), 0); },
+      terminate() {},
+    } as unknown as Worker;
+  };
+  const pool = makeGeneratorPool({ spawn, size: 1 });
+  await pool.ready();
+  const req = { generator: "test/sparse", params: { a: 1 }, seed: 5, ctx: { voxelsPerMetre: 20 } };
+  const a = await pool.generate(req);
+  const expect = sparseEntity(Math.floor((await import("@voxolith/renderer/core")).seededRandom(5)() * 1000));
+  const same = (e: Entity) => {
+    const x = e.model.sparse!.bricks, y = expect.model.sparse!.bricks;
+    if (x.size !== y.size) return false;
+    const kx = [...x.keys()], ky = [...y.keys()];
+    return kx.every((k, i) => k === ky[i] && x.get(k)!.every((v, j) => v === y.get(k)![j]));
+  };
+  ok(transfers[0] === 1, "a generated sparse model is posted as one transferred buffer", `${transfers[0]} transferables`);
+  ok(same(a) && (a.meta as { seed: number }).seed === (expect.meta as { seed: number }).seed, "  and arrives equal to the generated one, bricks in the same order");
+  const bufs = new Set([...a.model.sparse!.bricks.values()].map((b) => b.buffer));
+  ok(bufs.size === 1 && [...a.model.sparse!.bricks.values()].every((b) => b.length === 512), "  its bricks are views into that one buffer");
+  const key = pool.modelKey(a.model);
+  ok(!!key && key.includes("test/sparse@3") && key.includes("|5|") && key.includes('"voxelsPerMetre":20'), "modelKey names the worker, generator and version, seed, params and context", String(key));
+  await tick();
+  await tick();
+  const b = await pool.generate(req);
+  ok(pool.cached === 1 && transfers[1] === 1 && same(b), "a cache hit is posted packed too, and equal", `${transfers[1]} transferables`);
+  ok(pool.modelKey(b.model) === key && b.model !== a.model, "  with the same key for the same request");
+  const c = await pool.generate({ ...req, seed: 6 });
+  ok(pool.modelKey(c.model) !== key && pool.modelKey(sparseEntity(1).model) === undefined, "  another seed has another key; a model the pool did not make has none");
+  await pool.destroy();
+  ok(pool.modelKey(a.model) === key, "  and keys stay readable after destroy");
+  clearGenerators();
+}
+
+console.log("cache caps:");
+{
+  const warned: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...a: unknown[]) => { warned.push(a.map(String).join(" ")); };
+  try {
+    const MiB = 1024 * 1024;
+    const throws = (f: () => unknown) => { try { f(); return ""; } catch (e) { return e instanceof RangeError ? e.message : `not a RangeError: ${e}`; } };
+    const bad = [0, -1, NaN, Infinity, "64" as unknown as number];
+    const msgs = bad.map((v) => throws(() => makeModelCache(memoryCacheStore(), "A", { maxBytes: v })));
+    ok(msgs.every((m) => /model cache: maxBytes must be a positive, finite number of bytes/.test(m)), "a zero, negative, non-finite or non-number maxBytes throws a RangeError", msgs.join(" | "));
+    ok(throws(() => makeSceneCache(memoryCacheStore(), "S", { maxBytes: -5 })).includes("scene cache: maxBytes"), "  the scene cache too");
+    const scope = { onmessage: null, postMessage() {} };
+    ok(/serveGenerators\(\{ cache \}\): maxBytes/.test(throws(() => serveGenerators({ scope, cache: { store: memoryCacheStore(), maxBytes: 0 } }))), "  serveGenerators throws at once, not in every request");
+    ok(/serveScene\(\{ cache \}\): maxBytes/.test(throws(() => serveScene({ scope: scope as never, cache: { name: "x", maxBytes: NaN } }))), "  serveScene too (opening its cache would swallow the error)");
+    ok(throws(() => makeModelCache(memoryCacheStore(), "A", { maxBytes: undefined })) === "" && warned.length === 0, "  unset is no cap, and quiet");
+
+    warned.length = 0;
+    const small = makeModelCache(memoryCacheStore(), "A", { maxBytes: 4 * MiB });
+    ok(warned.length === 1 && /model cache: maxBytes is 4\.0 MiB, under 16\.0 MiB/.test(warned[0]) && /usage\(\)/.test(warned[0]), "a cap under 16 MiB warns once, pointing at usage()", warned.join(" | "));
+    const big = new Uint8Array(6 * MiB);
+    let x = 0x9e3779b9;
+    for (let i = 0; i < big.length; i++) { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; big[i] = x & 255; } // incompressible
+    const entity = { ...fakeEntity("big"), model: { size: { x: 6 * 1024, y: 1024, z: 1 }, data: big, anchor: [0, 0, 0], roles: [] } } as unknown as Entity;
+    await small.put("k1", entity);
+    await small.put("k2", entity);
+    const sized = warned.filter((w) => /larger than maxBytes/.test(w));
+    ok(sized.length === 1 && /an entry of 6\.\d MiB is larger than maxBytes \(4\.0 MiB\)/.test(sized[0]), "an entry bigger than the cap warns once, with both sizes", warned.join(" | "));
+    ok((await small.get("k1")) === undefined, "  and is not kept");
+
+    warned.length = 0;
+    const scene = makeSceneCache(memoryCacheStore(), "S", { maxBytes: 1024 });
+    await scene.putBake("d", { grid: { brickDim: [1, 1, 1], topDim: [1, 1, 1], gridMax: 1 }, models: [], count: 0, inst: new Uint32Array(4096), boxes: new Float64Array(0), parts: new Uint32Array(0), cells: new Uint32Array(0), list: new Uint32Array(0), subs: new Uint32Array(0), subCells: new Uint32Array(0), dropped: 0, stats: {} } as never);
+    await scene.putBake("e", { grid: { brickDim: [1, 1, 1], topDim: [1, 1, 1], gridMax: 1 }, models: [], count: 0, inst: new Uint32Array(4096), boxes: new Float64Array(0), parts: new Uint32Array(0), cells: new Uint32Array(0), list: new Uint32Array(0), subs: new Uint32Array(0), subCells: new Uint32Array(0), dropped: 0, stats: {} } as never);
+    ok(warned.length === 2 && /scene cache: maxBytes is 1\.0 KiB/.test(warned[0]) && /scene cache: an entry of/.test(warned[1]), "the scene cache warns the same way, once each", warned.join(" | "));
+
+    // Above the origin's quota, where navigator.storage.estimate() says so.
+    warned.length = 0;
+    const nav = globalThis.navigator as unknown as { storage?: unknown };
+    const had = Object.getOwnPropertyDescriptor(nav, "storage");
+    Object.defineProperty(nav, "storage", { value: { estimate: async () => ({ usage: 0, quota: 512 * MiB }) }, configurable: true });
+    try {
+      makeModelCache(memoryCacheStore(), "A", { maxBytes: 1024 * MiB });
+      makeModelCache(memoryCacheStore(), "A", { maxBytes: 256 * MiB });
+      await tick();
+    } finally {
+      if (had) Object.defineProperty(nav, "storage", had);
+      else delete nav.storage;
+    }
+    ok(warned.length === 1 && /maxBytes \(1024\.0 MiB\) is above this origin's storage quota \(512\.0 MiB\)/.test(warned[0]), "a cap above the origin's quota warns; one within it does not", warned.join(" | "));
+  } finally {
+    console.warn = realWarn;
+  }
 }
 
 console.log(`\n${checks - failed}/${checks} pool and cache checks passed`);

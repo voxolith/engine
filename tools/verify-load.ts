@@ -4,7 +4,7 @@
 // unsubscribe, a throwing listener), then the generator pool with fake workers, the chunked
 // world and the instance layer with fake targets.
 
-import { formatTimeline, LOAD_PHASES, makeLoadTracker, trackRenderer, type LoadEvent } from "../src/load";
+import { formatTimeline, LOAD_MARKS, LOAD_PHASES, makeLoadTracker, trackRenderer, type LoadEvent, type LoadMark } from "../src/load";
 import { makeGeneratorPool } from "../src/worker/pool";
 import type { GenerateRequest, WorkerRequest, WorkerResponse } from "../src/worker/protocol";
 import { makeChunkedWorld } from "../src/chunks";
@@ -333,6 +333,59 @@ console.log("instance layer:");
   await Promise.resolve();
   ok(!phase("upload").busy && load.timeline().find((e) => e.phase === "upload")!.spans === 2, "  and close it after");
   ok(events.every((e) => e.done <= e.total), "no event ever has done > total");
+}
+
+console.log("marks:");
+{
+  const before = performance.now();
+  const load = makeLoadTracker();
+  const after = performance.now();
+  ok(load.origin >= before && load.origin <= after && load.now() >= 0 && load.now() <= performance.now() - load.origin + 1e-9,
+    "origin is the performance.now() the tracker was made at; now() counts from it");
+  const events = record(load);
+  const heard: LoadMark[] = [];
+  const offMark = load.onMark((m) => heard.push(m));
+  const offThrow = load.onMark(() => { throw new Error("listener bug"); });
+  const err = console.error;
+  let logged = 0;
+  console.error = () => { logged++; };
+  const a = load.task("models", 1);
+  load.mark(LOAD_MARKS.firstFrame);
+  console.error = err;
+  ok(events.length === 1 && events[0].kind === "start", "a mark sends no phase event (on() listeners never see a new kind)", JSON.stringify(events));
+  ok(heard.length === 1 && heard[0].name === "first-frame" && logged === 1, "  onMark hears it, and a throwing mark listener is logged, not raised");
+  ok(load.snapshot().phases.length === 1 && load.snapshot().busy, "  marks are not phases: snapshot() has only the phase");
+  a.tick();
+  a.end();
+  let settled = false;
+  void load.idle().then(() => { settled = true; });
+  await tick();
+  ok(settled, "  and never keep the tracker busy");
+  console.error = () => { logged++; };
+  load.mark("early", 0);
+  load.mark(LOAD_MARKS.converged);
+  load.mark(LOAD_MARKS.converged);
+  console.error = err;
+  ok(load.marks().map((m) => m.name).join() === "early,first-frame,converged,converged", "marks() in time order; an explicit t is placed by it; repeats are kept",
+    load.marks().map((m) => m.name).join());
+  offMark();
+  offThrow();
+  load.mark("after-off");
+  ok(heard.length === 4, "  unsubscribing stops onMark", String(heard.length));
+  const tl = load.timeline();
+  ok(tl.map((e) => `${e.kind}:${e.phase}`).join() === "mark:early,phase:models,mark:first-frame,mark:converged,mark:converged,mark:after-off",
+    "timeline(): phases and marks in time order, told apart by kind", tl.map((e) => `${e.kind}:${e.phase}`).join());
+  const m = tl.find((e) => e.phase === "first-frame")!;
+  ok(m.end === m.start && m.busy === 0 && m.spans === 0 && m.done === 0 && m.total === 0 && tl.every((e) => e.end !== undefined),
+    "  a mark row is zero-length with no counts, and always has an end", JSON.stringify(m));
+  ok(tl.every((e, i) => i === 0 || tl[i - 1].start <= e.start), "  sorted by start");
+  const text = formatTimeline(tl);
+  const lines = text.split("\n");
+  ok(lines.length === tl.length + 1 && /^first-frame\s+\d+ ms\s+mark$/.test(lines.find((l) => l.startsWith("first-frame"))!), "formatTimeline: one line per mark, with `mark` for its length", text);
+  ok(LOAD_MARKS.firstFrame === "first-frame" && LOAD_MARKS.converged === "converged", "LOAD_MARKS names");
+  const quiet = makeLoadTracker();
+  quiet.mark("x");
+  ok(quiet.snapshot().phases.length === 0 && quiet.timeline().length === 1, "a tracker with only a mark: no phases, one timeline row");
 }
 
 console.log(`\n${checks - failed}/${checks} load checks passed`);

@@ -27,11 +27,30 @@ export interface ModelCache {
   /** The entity stored under `key`, as fresh arrays, or undefined. A hit marks the entry used now (for the size cap's eviction). */
   get(key: string): Promise<Entity | undefined>;
   /**
+   * The entity stored under `key` in its packed form ({@link packEntity}), or undefined: what
+   * `serveGenerators` posts, since one buffer transfers where a sparse model's thousands of
+   * brick buffers are slow to. A hit marks the entry used now.
+   */
+  getPacked(key: string): Promise<PackedEntity | undefined>;
+  /**
    * Store a packed, deflated copy. It copies before its first await, so the caller may transfer
    * the entity's buffers straight after calling. Resolves once the write has committed (or
    * failed). `info.generator` is recorded for inspecting and clearing by generator.
    */
   put(key: string, entity: Entity, info?: { generator?: string }): Promise<void>;
+  /** {@link ModelCache.put} for an entity already packed; it copies `packed.bytes` before its first await. */
+  putPacked(key: string, packed: PackedEntity, info?: { generator?: string }): Promise<void>;
+}
+
+/**
+ * An entity as one header plus one byte buffer holding its arrays, from {@link packEntity}: how
+ * the model cache stores entities and how `serveGenerators` posts them (one buffer to transfer).
+ */
+export interface PackedEntity {
+  /** The entity without its arrays, plus where each array lies in `bytes`. Plain data. */
+  head: Record<string, unknown>;
+  /** The arrays, back to back (each 4-byte aligned). */
+  bytes: Uint8Array<ArrayBuffer>;
 }
 
 /** Options for {@link openModelCache}. */
@@ -41,8 +60,79 @@ export interface ModelCacheOptions {
    * recently used entries (of any salt) are evicted until it fits, and a model bigger than the cap
    * is not kept at all. Unset, the cache grows until the browser's quota stops it (a failed write
    * keeps nothing, the model still works).
+   *
+   * The cap is the game's to set: size it by measuring. Load the game's heaviest scenes once with
+   * no cap, read {@link ModelCacheControls.usage} (e.g. from the console), and set the cap to that
+   * with some headroom, so that what one play session needs stays cached.
+   *
+   * Checked when the cache is made: a value that is not a positive finite number throws (a
+   * `RangeError`). These warn once per cache, with `console.warn` (each worker keeps its own
+   * cache, so a pool of four may warn four times): a cap under {@link CACHE_CAP_FLOOR} (16 MiB);
+   * a cap above the origin's quota as `navigator.storage.estimate()` reports it (the browser
+   * evicts first, so the cap never applies); and the first entry bigger than the cap, which is
+   * then not kept.
    */
   maxBytes?: number;
+}
+
+/**
+ * Below this `maxBytes` (16 MiB) a model or scene cache warns that its cap is probably a
+ * mistake: one refined model or placement bake is often bigger.
+ */
+export const CACHE_CAP_FLOOR = 16 * 1024 * 1024;
+
+const mib = (n: number) =>
+  n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MiB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${Math.round(n)} bytes`;
+
+/**
+ * Validate a cache's `maxBytes`: undefined (or null) is no cap, a positive finite number is the
+ * cap, anything else throws a `RangeError` naming `what`. @internal
+ */
+export function checkCacheCap(maxBytes: number | undefined, what: string): number | undefined {
+  if (maxBytes === undefined || maxBytes === null) return undefined;
+  if (typeof maxBytes !== "number" || !Number.isFinite(maxBytes) || maxBytes <= 0)
+    throw new RangeError(
+      `${what}: maxBytes must be a positive, finite number of bytes (got ${String(maxBytes)}). ` +
+        "Leave it unset for no cap; to size one, measure with the cache controls' usage().",
+    );
+  return maxBytes;
+}
+
+/**
+ * The once-per-cache warnings about a cap ({@link ModelCacheOptions.maxBytes}): warns now if it
+ * is under the floor, soon if it is above the origin's quota, and returns the check for an entry
+ * too big to keep. @internal
+ */
+export function watchCacheCap(cap: number | undefined, what: string): (size: number) => void {
+  if (cap === undefined) return () => {};
+  const warn = (m: string) => console.warn(`voxolith: ${what}: ${m}`);
+  if (cap < CACHE_CAP_FLOOR)
+    warn(
+      `maxBytes is ${mib(cap)}, under ${mib(CACHE_CAP_FLOOR)}. One model or bake at a fine scale is often bigger, ` +
+        "so a cap this small keeps little. Measure what your scenes store with the cache controls' usage() and size the cap from that.",
+    );
+  const storage = (globalThis as { navigator?: { storage?: { estimate?: () => Promise<{ quota?: number }> } } }).navigator?.storage;
+  if (typeof storage?.estimate === "function") {
+    void Promise.resolve()
+      .then(() => storage.estimate!())
+      .then((e) => {
+        if (e?.quota !== undefined && cap > e.quota)
+          warn(
+            `maxBytes (${mib(cap)}) is above this origin's storage quota (${mib(e.quota)}), so the browser evicts before the cap ` +
+              "is reached. Lower it, or ask for more room with navigator.storage.persist().",
+          );
+      })
+      .catch(() => {});
+  }
+  let warned = false;
+  return (size) => {
+    if (warned || size <= cap) return;
+    warned = true;
+    warn(
+      `an entry of ${mib(size)} is larger than maxBytes (${mib(cap)}), so it is not cached and is rebuilt on every visit. ` +
+        "Raise the cap (measure with the cache controls' usage()). Warned once; later ones are skipped silently.",
+    );
+  };
 }
 
 /** One entry of the model cache, as {@link ModelCacheControls.entries} lists it. */
@@ -148,8 +238,8 @@ const META = "meta";
 /** 1: records only. 2: adds `meta`; version-1 records have no entry and are dropped. */
 const VERSION = 2;
 
-/** Open (and create or upgrade) the cache database, or null where it cannot be opened. */
-function openDb(name: string): Promise<IDBDatabase | null> {
+/** Open (and create or upgrade) the cache database, or null where it cannot be opened. @internal */
+export function openDb(name: string): Promise<IDBDatabase | null> {
   const idb = (globalThis as { indexedDB?: IDBFactory }).indexedDB;
   if (!idb) return Promise.resolve(null);
   return new Promise((resolve) => {
@@ -190,8 +280,8 @@ function openDb(name: string): Promise<IDBDatabase | null> {
   });
 }
 
-/** A {@link CacheStore} on an open IndexedDB database. */
-function idbStore(db: IDBDatabase): CacheStore {
+/** A {@link CacheStore} on an open IndexedDB database. @internal */
+export function idbStore(db: IDBDatabase): CacheStore {
   const run = <T>(mode: IDBTransactionMode, body: (tx: IDBTransaction) => () => T) =>
     new Promise<T>((resolve, reject) => {
       const tx = db.transaction([MODELS, META], mode);
@@ -244,9 +334,20 @@ function idbStore(db: IDBDatabase): CacheStore {
   };
 }
 
+/** Deflate a blob (raw deflate, as every cache record is stored). @internal */
+export async function deflate(b: Blob): Promise<Blob> {
+  return new Response(b.stream().pipeThrough(new CompressionStream("deflate-raw"))).blob();
+}
+
+/** Inflate a {@link deflate}d blob into bytes that own their buffer. @internal */
+export async function inflate(b: Blob): Promise<Uint8Array<ArrayBuffer>> {
+  return new Uint8Array(await new Response(b.stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
+}
+
 // --- policy-free logic ------------------------------------------------------------------------
 
-const matches = (e: ModelCacheEntry, f: ModelCacheFilter = {}) =>
+/** Whether an entry passes a filter. @internal */
+export const matches = (e: ModelCacheEntry, f: ModelCacheFilter = {}) =>
   (f.generator === undefined || e.generator === f.generator) && (f.salt === undefined || e.salt === f.salt);
 
 /** The keys to evict, least recently used first, so that what stays totals at most `maxBytes`. */
@@ -264,29 +365,38 @@ export function planEviction(entries: readonly ModelCacheEntry[], maxBytes: numb
 /**
  * The model cache on any {@link CacheStore}: keys are prefixed with `salt`, entries are deflated,
  * and `maxBytes` evicts by last use after each write. {@link openModelCache} is this on IndexedDB.
+ * Throws a `RangeError` on a `maxBytes` that is not a positive finite number, and warns about
+ * doubtful ones ({@link ModelCacheOptions.maxBytes}).
  *
  * @param now - The clock for `created` / `lastUsed` (default `Date.now`); tests pass their own.
  */
 export function makeModelCache(store: CacheStore, salt: string, opts: ModelCacheOptions = {}, now: () => number = Date.now): ModelCache {
   const prefix = `${salt}|`;
-  const cap = opts.maxBytes !== undefined && opts.maxBytes >= 0 ? opts.maxBytes : undefined;
-  return {
+  const cap = checkCacheCap(opts.maxBytes, "model cache");
+  const tooBig = watchCacheCap(cap, "model cache");
+  const cache: ModelCache = {
     async get(key) {
+      const p = await cache.getPacked(key);
+      return p && unpackEntity(p.head, p.bytes);
+    },
+    async getPacked(key) {
       try {
         const rec = await store.get(prefix + key, now());
         if (!rec) return undefined;
-        const bytes = new Uint8Array(await new Response(rec.body.stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
-        return unpackEntity(rec.head, bytes);
+        return { head: rec.head, bytes: await inflate(rec.body) };
       } catch {
         return undefined;
       }
     },
-    async put(key, entity, info) {
+    put(key, entity, info) {
+      return cache.putPacked(key, packEntity(entity), info);
+    },
+    async putPacked(key, { head, bytes }, info) {
       try {
-        const { head, bytes } = packEntity(entity);
-        const body = await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate-raw"))).blob();
+        // The Blob copies the bytes now, so the caller may transfer them once this returns.
+        const body = await deflate(new Blob([bytes]));
         const size = body.size + JSON.stringify(head).length;
-        if (cap !== undefined && size > cap) return;
+        if (cap !== undefined && size > cap) return tooBig(size);
         const t = now();
         const generator = info?.generator ?? "";
         await store.put(prefix + key, { head, body }, { key: prefix + key, salt, generator, bytes: size, created: t, lastUsed: t });
@@ -296,6 +406,7 @@ export function makeModelCache(store: CacheStore, salt: string, opts: ModelCache
       }
     },
   };
+  return cache;
 }
 
 /** {@link ModelCacheControls} on any {@link CacheStore}. {@link openModelCacheControls} is this on IndexedDB. */
@@ -381,8 +492,11 @@ export async function openModelCacheControls(name: string): Promise<ModelCacheCo
 
 interface Section { name: string; offset: number; length: number; kind: "u8" | "u32" }
 
-/** An entity as a small header plus one byte buffer holding its arrays. */
-export function packEntity(entity: Entity): { head: Record<string, unknown>; bytes: Uint8Array<ArrayBuffer> } {
+/**
+ * An entity as a small header plus one byte buffer holding its arrays ({@link PackedEntity}): a
+ * sparse model's bricks become one key array and one brick array, in the map's order. Copies.
+ */
+export function packEntity(entity: Entity): PackedEntity {
   const m = entity.model;
   const parts: { name: string; data: Uint8Array | Uint32Array }[] = [];
   if (m.sparse) {
@@ -403,8 +517,13 @@ export function packEntity(entity: Entity): { head: Record<string, unknown>; byt
   return { head: { entity: { ...entity, model }, sections }, bytes };
 }
 
-/** Rebuild an entity from {@link packEntity}'s output. Every array is copied out of `bytes`. */
-export function unpackEntity(head: Record<string, unknown>, bytes: Uint8Array): Entity {
+/**
+ * Rebuild an entity from {@link packEntity}'s output. Every array is copied out of `bytes`, unless
+ * `opts.views`: then a sparse model's bricks are views into `bytes` (which the entity then owns;
+ * one allocation per brick rather than one copy each, which is what the generator pool does with
+ * the packed entities its workers post). Dense `data` and `bones` are always copies.
+ */
+export function unpackEntity(head: Record<string, unknown>, bytes: Uint8Array, opts: { views?: boolean } = {}): Entity {
   const sections = head.sections as Section[];
   const view = (s: Section) => (s.kind === "u32" ? new Uint32Array(bytes.buffer, bytes.byteOffset + s.offset, s.length) : new Uint8Array(bytes.buffer, bytes.byteOffset + s.offset, s.length));
   const get = (n: string) => sections.find((s) => s.name === n);
@@ -414,8 +533,9 @@ export function unpackEntity(head: Record<string, unknown>, bytes: Uint8Array): 
   if (keys && bricks) {
     const k = view(keys) as Uint32Array, b = view(bricks) as Uint8Array;
     const map = new Map<number, Uint8Array>();
-    // Each brick its own buffer, as a generator would make it (and as the pool transfers them).
-    for (let i = 0; i < k.length; i++) map.set(k[i], b.slice(i * 512, i * 512 + 512));
+    // Each brick its own buffer, as a generator would make it; or views into the one buffer.
+    if (opts.views) for (let i = 0; i < k.length; i++) map.set(k[i], b.subarray(i * 512, i * 512 + 512));
+    else for (let i = 0; i < k.length; i++) map.set(k[i], b.slice(i * 512, i * 512 + 512));
     model.sparse = { size: { ...model.size }, bricks: map };
     model.data = new Uint8Array(0);
   } else if (data) model.data = (view(data) as Uint8Array).slice();

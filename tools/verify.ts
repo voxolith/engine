@@ -228,6 +228,57 @@ console.log("\nchunked world:");
   ok(survived > 0, "  neighbouring chunks survive the eviction", `${survived} voxels left`);
 }
 
+console.log("\nchunked world readiness:");
+{
+  // A 10 x 10 world of 16-voxel chunks, built nearest-first around a focus; readiness near a point.
+  const size = { x: 160, y: 8, z: 160 }, CHUNK = 16;
+  const built: string[] = [];
+  const world = makeChunkedWorld({
+    target: { edit() {}, clear() {} } as never,
+    size, chunk: CHUNK, seed: 1,
+    generate(ctx) { built.push(`${ctx.cx},${ctx.cz}`); },
+  });
+  // Chunks whose centre lies within r of (x, z), inside the world: what focus queues.
+  const within = (x: number, z: number, r: number) => {
+    let n = 0;
+    for (let cz = 0; cz < 10; cz++) for (let cx = 0; cx < 10; cx++) if ((cx * CHUNK + 8 - x) ** 2 + (cz * CHUNK + 8 - z) ** 2 <= r * r) n++;
+    return n;
+  };
+  const near = within(80, 80, 24), far = within(80, 80, 64);
+  ok(world.pendingWithin(80, 80, 24) === near && !world.readyAround(80, 80, 24), "before any focus, every chunk near the point is pending (queued or not)", `${world.pendingWithin(80, 80, 24)} of ${near}`);
+  world.focus(80, 80, 64, Infinity);
+  ok(world.pending === far && world.pendingWithin(80, 80, 64) === far, "focus queues exactly the chunks pendingWithin counts at its radius", `${world.pending} queued, ${far} within`);
+  let resolved = false;
+  const ready = world.whenReady(80, 80, 24).then(() => { resolved = true; });
+  const ctl = new AbortController();
+  const aborted = world.whenReady(0, 0, 400, { signal: ctl.signal }).catch((e) => e?.name ?? String(e));
+  // Build one chunk at a time: the near ones come first, so the near area is ready early.
+  let steps = 0;
+  while (!world.readyAround(80, 80, 24)) {
+    const before = world.pendingWithin(80, 80, 24);
+    world.focus(80, 80, 64, Infinity);
+    world.step(-1);
+    steps++;
+    if (world.pendingWithin(80, 80, 24) !== before - 1) break;
+  }
+  ok(steps === near && world.pendingWithin(80, 80, 24) === 0, "nearest-first: the chunks within 24 are the first built, one per step", `${steps} steps for ${near}`);
+  ok(world.pending === far - near && world.pendingWithin(80, 80, 64) === far - near, "  the rest are still pending, and counted", `${world.pending}`);
+  await Promise.resolve();
+  ok(resolved, "whenReady resolves after the step that built the last near chunk");
+  ok(await world.whenReady(80, 80, 24).then(() => true), "  and at once when the area is already built");
+  ctl.abort();
+  ok((await aborted) === "AbortError", "whenReady with a signal rejects on abort");
+  // The focus moves before the queue is empty: what is still queued is re-ranked from it.
+  // (2..3, 2..3) were queued for (80, 80), ranked behind chunks nearer it; from (48, 48) they are
+  // the nearest, ahead of chunks newly queued for it such as (1, 1).
+  world.focus(48, 48, 64, Infinity);
+  world.step(-1);
+  ok(["2,2", "3,2", "2,3", "3,3"].includes(built.at(-1)!), "after the focus moves, chunks queued earlier are re-ranked from the new point", built.at(-1));
+  while (world.step(1e9)) {}
+  ok(world.readyAround(48, 48, 64) && world.readyAround(80, 80, 64) && world.pendingWithin(80, 80, 64) === 0, "once the queue is empty, both areas are ready");
+  ok(world.pendingWithin(1000, 1000, 10) === 0 && world.pendingWithin(80, 80, -1) === 0, "  outside the world, or at a negative radius, nothing is pending");
+}
+
 console.log("\nvariant pool:");
 {
   let built = 0;
