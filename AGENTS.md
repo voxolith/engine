@@ -51,7 +51,9 @@ CI (`ci.yml`, job `typecheck`) runs both, with `renderer` checked out alongside.
   one transferred buffer); transferring one buffer per brick took seconds.
 - `src/input/`: `createInput`, `prepareSurface`, orbit and look controllers, gestures, actions
   and touch controls.
-- `src/atmosphere/`: `timeOfDay`, `ATMOSPHERES`, blending, `atmosphereFrame`.
+- `src/atmosphere/`: `timeOfDay`, `ATMOSPHERES`, blending, `atmosphereFrame` (which packs the sky
+  as `background` params), `classicSky` (`classic-sky.ts`: the stylised sky as a renderer
+  background module, `CLASSIC_SKY_WESL` + `classicSkyParams`).
 - `src/animation/`: animator, pose, bake (`bakePose`), cache, crowd (`makeCrowd`), damage
   (`wound`, `sever`).
 - `src/pwa/`: `vite.ts` (`serviceWorker()`, the plugin; type-only `vite` import), `sw.ts` (the

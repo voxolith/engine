@@ -1,6 +1,7 @@
 // Headless checks for @voxolith/engine/atmosphere.  bun tools/verify-atmosphere.ts
 
-import { approach, atmosphereFrame, ATMOSPHERES, blendAtmosphere, makeAtmosphereTransition, timeOfDay, type Atmosphere } from "../src/atmosphere/index";
+import { BACKGROUND_FLOATS } from "@voxolith/renderer/core";
+import { approach, atmosphereFrame, ATMOSPHERES, blendAtmosphere, CLASSIC_SKY_WESL, classicSky, classicSkyParams, makeAtmosphereTransition, timeOfDay, type Atmosphere } from "../src/atmosphere/index";
 
 let failed = 0, checks = 0;
 const ok = (c: boolean, m: string, d = "") => {
@@ -50,15 +51,31 @@ console.log("to the renderer:");
   const light = timeOfDay(0.5);
   const clear = atmosphereFrame(light, ATMOSPHERES.clear);
   ok(same(clear.lightColor, light.lightColor) && same(clear.skyTop, light.skyTop) && same(clear.ambientSky, light.ambientSky), "clear weather leaves the lighting untouched");
-  ok(!clear.fog && !clear.clouds && !clear.precipitation && !clear.surface, "and asks the renderer for no fog, clouds, precipitation or surface");
+  ok(!clear.fog && !clear.precipitation && !clear.surface && clear.background[15] === 0, "and asks the renderer for no fog, clouds, precipitation or surface");
+  ok(!("clouds" in clear), "the cloud layer travels in the background parameters, not as a renderer field");
+  ok(same(Array.from(clear.background), Array.from(classicSkyParams(light))), "a clear sky's background is the time of day's, packed");
   const over = atmosphereFrame(light, ATMOSPHERES.overcast);
   ok(lum(over.lightColor) < lum(light.lightColor) * 0.5, "overcast dims the key light");
+  const bg = over.background, f32 = (v: number) => Math.fround(v);
+  ok(bg.length === BACKGROUND_FLOATS && bg[15] === f32(ATMOSPHERES.overcast.cloud) && bg[24] > 0.5, `overcast packs its cloud cover and colour for the sky (cover ${bg[15].toFixed(2)})`);
+  ok([0, 1, 2].every((i) => bg[16 + i] === f32(over.skyTop[i]) && bg[20 + i] === f32(over.skyHorizon[i])) && bg[3] === f32(over.sunIntensity) && bg[7] === f32(over.moonIntensity),
+    "  and the greyed sky and dimmed discs it returns, as the renderer used to pack them");
   const east = atmosphereFrame(light, { ...ATMOSPHERES.storm, wind: { direction: 90, strength: 1 } });
+  ok(east.background[28] > 1 && Math.abs(east.background[29]) < 1e-6, "wind towards +X drifts the clouds that way");
   ok(!!east.precipitation && east.precipitation.fall[0] > 5 && east.precipitation.fall[1] < -30, `wind towards +X tilts the rain that way (${east.precipitation?.fall.map((v) => v.toFixed(1))})`);
   const snowy = atmosphereFrame(timeOfDay(0), { ...ATMOSPHERES.snow, cover: 0.7 });
   ok(snowy.precipitation?.kind === "snow" && (snowy.precipitation?.fall[1] ?? 0) > -20, "snow falls slowly");
   ok(snowy.surface?.cover === 0.7, "settled snow reaches the renderer as surface cover");
   ok(lum(atmosphereFrame(timeOfDay(0), ATMOSPHERES.overcast).skyTop) < 0.12, "an overcast night stays dark");
+}
+
+console.log("classic sky:");
+{
+  ok(classicSky.source === CLASSIC_SKY_WESL && /fn background\(rd : vec3<f32>, footprint : f32\) -> vec3<f32>/.test(CLASSIC_SKY_WESL) && CLASSIC_SKY_WESL.includes("import package::bg::BG;"),
+    "classicSky is a background module (fn background(rd, footprint), reading package::bg)");
+  const out = new Float32Array(BACKGROUND_FLOATS).fill(9);
+  const packed = classicSkyParams(timeOfDay(0), out);
+  ok(packed === out && out.slice(24).every((v) => v === 0) && out[12] > 0.8 && out[11] > 0.9, "classicSkyParams writes into the given array, clearing what it does not use (night factor " + out[11].toFixed(2) + ")");
 }
 
 console.log("scale:");

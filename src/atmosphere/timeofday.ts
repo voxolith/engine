@@ -1,4 +1,4 @@
-// Time of day: every lighting field of FrameParams from one number.
+// Time of day: the key light, ambient and sky vocabulary from one number.
 //
 // `phase` runs 0..1 over a day: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75
 // sunset. The sun rises in +X and sets in -X on a tilted arc towards +Z;
@@ -12,20 +12,38 @@
 
 type Vec3 = [number, number, number];
 
-/** The lighting half of FrameParams (everything but the camera). */
+/**
+ * A time of day's light and sky. `lightDir`, `lightColor`, `ambientSky` and `ambientGround` are
+ * the renderer's `FrameParams` fields; the rest (sun and moon, sky ramps, night factor) is sky
+ * vocabulary that a background draws: {@link classicSkyParams} packs it for {@link classicSky},
+ * and {@link atmosphereFrame} does both.
+ */
 export interface Lighting {
+  /** Towards the key light (the sun by day, the moon by night); renderer field. */
   lightDir: Vec3;
+  /** Key light colour and strength; renderer field. */
   lightColor: Vec3;
+  /** Ambient light from above; renderer field. */
   ambientSky: Vec3;
+  /** Ambient light from below; renderer field. */
   ambientGround: Vec3;
+  /** Towards the sun, where a background draws its disc (below the horizon at night). */
   sunDir: Vec3;
+  /** Towards the moon, opposite the sun. The moon lights nothing; the key light does. */
   moonDir: Vec3;
+  /** Colour of the sun disc and its glow: warm low, white high. */
   sunColor: Vec3;
+  /** Colour of the moon disc. */
   moonColor: Vec3;
+  /** Sky colour at the zenith. */
   skyTop: Vec3;
+  /** Sky colour at the horizon. */
   skyHorizon: Vec3;
+  /** 0 day .. 1 night: how much night sky (stars) shows. */
   nightFactor: number;
+  /** Sun disc brightness, 0 .. 1; 0 hides it. */
   sunIntensity: number;
+  /** Moon disc brightness; 0 hides it. */
   moonIntensity: number;
 }
 
@@ -53,17 +71,20 @@ const norm = (v: Vec3): Vec3 => {
 const lift = (v: Vec3, minY: number): Vec3 => norm([v[0], Math.max(v[1], minY), v[2]]);
 
 /**
- * Every lighting field of the renderer's `FrameParams` for a time of day: key light, ambient,
- * sun and moon discs, sky colours. By day the key light follows the sun; at night it is a dim
+ * The light and sky for a time of day: key light and ambient (renderer fields), sun and moon
+ * directions, colours and intensities, sky colours (for a background such as {@link classicSky}). By day the key light follows the sun; at night it is a dim
  * blue moonlight and the ambient drops low enough for point lights to carry the scene. The moon
  * disc lights nothing; the key light does.
  *
  * @param phase - 0..1 over a day (wrapped): 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset.
  *   Animate it to animate the sky.
- * @returns The lighting, to spread into `renderer.render` or pass to {@link atmosphereFrame}.
+ * @param opts - Night darkness and moonlight strength.
+ * @returns The lighting, to pass to {@link atmosphereFrame} (which also packs the sky), or to
+ *   spread into `renderer.render` with the sky packed by {@link classicSkyParams}.
  * @example
  * ```ts
- * renderer.render({ ...frame(), ...timeOfDay(0.42) });
+ * const light = timeOfDay(0.42);
+ * renderer.render({ ...frame(), ...light, background: classicSkyParams(light) });
  * ```
  */
 export function timeOfDay(phase: number, opts: TimeOfDayOptions = {}): Lighting {

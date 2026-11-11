@@ -13,6 +13,7 @@
 // at 0, so a game sets them from its own accumulators.
 
 import type { AtmosphereParams } from "@voxolith/renderer/core";
+import { classicSkyParams } from "./classic-sky";
 import type { Lighting } from "./timeofday";
 
 type Vec3 = [number, number, number];
@@ -172,25 +173,49 @@ export interface AtmosphereFrameOptions {
 }
 
 /**
+ * What {@link atmosphereFrame} returns: the weather-adjusted {@link Lighting} (its sky fields
+ * greyed by cloud, to read back, e.g. `skyHorizon` for a fog colour), the renderer's atmosphere
+ * fields, and `background`, the classic sky's parameters already packed. Spread it into
+ * `renderer.render`; the renderer reads `lightDir`, `lightColor`, the ambients, the atmosphere
+ * fields and `background`, and ignores the rest.
+ */
+export interface AtmosphereFrame extends Lighting, AtmosphereParams {
+  /**
+   * `FrameParams.background` for {@link classicSky}: this frame's sky, sun and moon discs and
+   * cloud layer (cover, colour, drift), packed by {@link classicSkyParams}. A renderer created
+   * with another background ignores it, or reads it as that background's own parameters, so pass
+   * `background` explicitly after the spread when using one.
+   */
+  background: Float32Array;
+}
+
+/**
  * Lighting and the renderer's atmosphere settings for one frame: overcast
  * dims and flattens the key light and greys the sky (keeping the night dark),
  * fog takes the horizon's colour, wind tilts the rain and snow and drives the
  * clouds and the water. With a clear atmosphere the lighting passes through
  * unchanged.
  *
- * Fog, clouds, precipitation and the ground surface are only set when non-zero, so the renderer
- * skips what is off. Water animates from `FrameParams.time`, which this does not set.
+ * The sky itself (gradient, sun and moon discs, clouds) comes back as `background`, the
+ * parameters of {@link classicSky}, so create the renderer with
+ * `createRenderer(gpu, scene, { background: classicSky })` to see it; the renderer's own default
+ * is a plain gradient. Fog, precipitation and the ground surface are only set when non-zero, so
+ * the renderer skips what is off. Water and cloud drift animate from `FrameParams.time`, which
+ * this does not set.
  *
  * @param lighting - Usually {@link timeOfDay}'s result.
  * @param atm - The sky, with the game's own `wetness` and `cover`.
- * @returns Lighting plus the renderer's atmosphere fields, to spread into `renderer.render`.
+ * @param opts - Scale, fall speeds and snow colour.
+ * @returns Lighting plus the renderer's atmosphere fields and the packed sky, to spread into
+ *   `renderer.render`.
  * @example
  * ```ts
+ * const renderer = await createRenderer(gpu, scene, { background: classicSky });
  * const sky = atmosphereFrame(timeOfDay(0.45), ATMOSPHERES.rain, { voxelsPerMetre: 100 });
  * renderer.render({ ...frame(), ...sky, time: now / 1000 });
  * ```
  */
-export function atmosphereFrame(lighting: Lighting, atm: Atmosphere, opts: AtmosphereFrameOptions = {}): Lighting & AtmosphereParams {
+export function atmosphereFrame(lighting: Lighting, atm: Atmosphere, opts: AtmosphereFrameOptions = {}): AtmosphereFrame {
   const day = clamp01(lighting.sunIntensity);
   const cloud = clamp01(atm.cloud);
   const precip = atm.precipitation.kind === "none" ? 0 : clamp01(atm.precipitation.intensity);
@@ -217,7 +242,10 @@ export function atmosphereFrame(lighting: Lighting, atm: Atmosphere, opts: Atmos
   const ws = clamp01(atm.wind.strength);
 
   const es = (opts.voxelsPerMetre ?? 10) / 10;
-  const out: Lighting & AtmosphereParams = {
+  const sunIntensity = lighting.sunIntensity * (1 - 0.7 * cloud);
+  const moonIntensity = lighting.moonIntensity * (1 - 0.8 * cloud);
+  const drift: [number, number] = [wx * (0.3 + ws * 2), wz * (0.3 + ws * 2)];
+  const out: AtmosphereFrame = {
     ...lighting,
     ...(es !== 1 ? { effectScale: es } : {}),
     lightColor,
@@ -225,11 +253,18 @@ export function atmosphereFrame(lighting: Lighting, atm: Atmosphere, opts: Atmos
     ambientGround,
     skyTop,
     skyHorizon,
-    sunIntensity: lighting.sunIntensity * (1 - 0.7 * cloud),
-    moonIntensity: lighting.moonIntensity * (1 - 0.8 * cloud),
+    sunIntensity,
+    moonIntensity,
     waterWind: [wx * ws * 1.5, wz * ws * 1.5],
+    background: classicSkyParams({
+      ...lighting,
+      skyTop,
+      skyHorizon,
+      sunIntensity,
+      moonIntensity,
+      ...(cloud > 0 ? { clouds: { cover: cloud, color: cloudColor, drift } } : {}),
+    }),
   };
-  if (cloud > 0) out.clouds = { cover: cloud, color: cloudColor, drift: [wx * (0.3 + ws * 2), wz * (0.3 + ws * 2)] };
 
   const fogAmount = clamp01(atm.fog) + precip * (atm.precipitation.kind === "snow" ? 0.35 : 0.2);
   if (fogAmount > 0) {
