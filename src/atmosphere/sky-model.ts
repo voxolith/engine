@@ -49,7 +49,10 @@ export interface SkyAtmosphere {
   ozoneCentre: number;
   /** Half the ozone layer's thickness, km (density falls linearly to 0 either side). */
   ozoneHalfWidth: number;
-  /** The ground's albedo, linear RGB: light it sends back into the sky, and the ambient from below. */
+  /**
+   * The ground's albedo, linear RGB: light it sends back into the sky, the ambient from below,
+   * and the colour of the ground the backdrop shows below the horizon.
+   */
   groundAlbedo: Vec3;
 }
 
@@ -703,7 +706,10 @@ export interface SkyClouds {
  * cloud cover; [3] moon sky-view scale, star brightness; [4] sun disc colour, horizon zenith
  * angle; [5] moon disc colour, 0; [6] cloud colour lit by the sun, drift x; [7] cloud colour lit
  * by the moon, drift y; [8] cloud ambient colour, 0; [9] the direction the sun's sky-view table
- * was built for, 0; [10] the moon's, 0; [11] airglow, 0.
+ * was built for, 0; [10] the moon's, 0; [11] airglow, 0; [12] the ground below the horizon
+ * (linear; left 0 here, {@link packSkyGround} fills it from the frame's light), the camera's radius
+ * in km; [13] the air's extinction per km at the ground, the camera's radius squared less the
+ * planet's (km², the tangent length squared).
  */
 export function packPhysicalSky(st: SkyState, s: SkySettings, clouds: SkyClouds, lutSun: Readonly<Vec3>, lutMoon: Readonly<Vec3>, out: Float32Array = new Float32Array(BACKGROUND_FLOATS)): Float32Array {
   out.fill(0);
@@ -732,7 +738,63 @@ export function packPhysicalSky(st: SkyState, s: SkySettings, clouds: SkyClouds,
   w(9, lutSun, 0);
   w(10, lutMoon, 0);
   w(11, st.airglow, 0);
+  w(12, [0, 0, 0], s.camR);
+  w(13, groundExtinction(s.atm), s.camR * s.camR - s.atm.bottomRadius * s.atm.bottomRadius);
   return out;
+}
+
+/** The air's extinction per km at the ground (Rayleigh and Mie; the ozone is far above). */
+function groundExtinction(a: SkyAtmosphere): Vec3 {
+  return [a.rayleighScattering[0] + a.mieExtinction, a.rayleighScattering[1] + a.mieExtinction, a.rayleighScattering[2] + a.mieExtinction];
+}
+
+/**
+ * The colour of the ground the backdrop shows below the horizon, on screen: the atmosphere's
+ * ground albedo as a flat, upward face under the frame's own light, shaded the way the renderer
+ * shades a voxel's top (albedo * (0.85 ambientSky + 0.6 n.l lightColor), `raymarch.wesl`). So it
+ * is lit, clouded over and darkened exactly as the terrain standing on it is, at any hour.
+ *
+ * @param albedo - The ground's albedo, linear (`SkyAtmosphere.groundAlbedo`).
+ * @param light - The frame's key light and sky ambient, after weather.
+ * @returns The display colour (what a voxel of that albedo would show).
+ */
+export function skyGroundDisplay(albedo: Readonly<Vec3>, light: { lightDir: Readonly<Vec3>; lightColor: Readonly<Vec3>; ambientSky: Readonly<Vec3> }): Vec3 {
+  const ndl = Math.max(0, light.lightDir[1]);
+  return [0, 1, 2].map((c) => Math.pow(Math.max(0, albedo[c]), 1 / 2.2) * (0.85 * light.ambientSky[c] + 0.6 * ndl * light.lightColor[c])) as Vec3;
+}
+
+/**
+ * Write the ground's colour into packed backdrop parameters ([12].xyz), linear: the inverse of
+ * the backdrop's display encoding of {@link skyGroundDisplay}, held under the tone curve's
+ * shoulder (where the two are exact inverses).
+ */
+export function packSkyGround(bg: Float32Array, display: Readonly<Vec3>): void {
+  for (let c = 0; c < 3; c++) bg[48 + c] = Math.min(0.8, Math.pow(Math.max(0, display[c]), 2.2));
+}
+
+/**
+ * What the backdrop shows below the horizon, as its shader computes it (linear, before the tone
+ * curve): the ground (packed in `bg`) seen through the air between it and the camera, which
+ * scatters in the horizon's light. The air this close to the ground is all but uniform, so the
+ * in-scattered light over a distance d is the horizon's radiance times 1 - exp(-extinction d)
+ * and the ground shows through the rest: aerial perspective over a Lambertian ground (the airlight
+ * relation known as Koschmieder's law, with the horizon of Hillaire's sky-view table as the airlight). Straight
+ * down, 100 m of air, it is the ground; just below the horizon, tens of kilometres, mostly haze.
+ *
+ * @param bg - The backdrop's parameters, from {@link packPhysicalSky}.
+ * @param horizon - The backdrop at the horizon in this direction, linear (e.g. `SkyState.horizonLinear`).
+ * @param muV - The view direction's cos-zenith (its y), negative below the horizontal.
+ * @returns The linear colour; `horizon` itself for a direction that misses the ground.
+ */
+export function skyBelowHorizon(bg: Float32Array, horizon: Readonly<Vec3>, muV: number): Vec3 {
+  const r = bg[51], tangent2 = bg[55];
+  const sn = -muV, disc = r * r * sn * sn - tangent2;
+  if (!(sn > 0) || disc < 0) return [horizon[0], horizon[1], horizon[2]];
+  const d = tangent2 / (r * sn + Math.sqrt(disc));
+  return [0, 1, 2].map((c) => {
+    const t = Math.exp(-bg[52 + c] * d);
+    return bg[48 + c] * t + horizon[c] * (1 - t);
+  }) as Vec3;
 }
 
 /** The linear colour of the cloud layer's underside towards the horizon (for fog), as packed. */

@@ -1,6 +1,9 @@
 // Headless checks for @voxolith/engine/atmosphere.  bun tools/verify-atmosphere.ts
 
 import { BACKGROUND_FLOATS } from "@voxolith/renderer/core";
+import { EARTH_ATMOSPHERE, makeSkyModel, skyBelowHorizon, skyDisplay } from "../src/atmosphere/sky-model";
+import { PHYSICAL_SKY_WESL } from "../src/atmosphere/physical-sky-wgsl";
+import { physicalSkyFrame } from "../src/atmosphere/physical-sky";
 import { approach, atmosphereFrame, ATMOSPHERES, blendAtmosphere, CLASSIC_SKY_WESL, classicSky, classicSkyParams, makeAtmosphereTransition, timeOfDay, type Atmosphere } from "../src/atmosphere/index";
 
 let failed = 0, checks = 0;
@@ -76,6 +79,64 @@ console.log("classic sky:");
   const out = new Float32Array(BACKGROUND_FLOATS).fill(9);
   const packed = classicSkyParams(timeOfDay(0), out);
   ok(packed === out && out.slice(24).every((v) => v === 0) && out[12] > 0.8 && out[11] > 0.9, "classicSkyParams writes into the given array, clearing what it does not use (night factor " + out[11].toFixed(2) + ")");
+}
+
+console.log("physical sky, below the horizon:");
+{
+  const model = makeSkyModel();
+  const dl = (v: readonly number[]) => lum(v.map(skyDisplay) as [number, number, number]);
+  const dip = model.settings.horizonZenith - Math.PI / 2;
+  const mu = (deg: number) => -Math.sin(dip + (deg * Math.PI) / 180); // degrees below the horizon
+  const rows: string[] = [];
+  let bounded = true, between = true, lit = true, hazy = true, sky = true, exact = true, shaded = true;
+  for (const [name, phase] of [["noon", 0.5], ["dusk", 0.76], ["night", 0]] as const) {
+    const t = timeOfDay(phase);
+    const frame = physicalSkyFrame(model, t);
+    const st = model.state(t.sunDir, t.moonDir);
+    const h = st.horizonLinear;
+    const at = (deg: number) => skyBelowHorizon(frame.background, h, mu(deg));
+    const ls = [0.01, 0.3, 1, 5, 30, 89.6].map((d) => dl(at(d)));
+    rows.push(`${name} horizon ${dl(h).toFixed(3)} below ${ls.map((v) => v.toFixed(3)).join(" ")}`);
+    if (ls.some((v) => v > dl(h) + 1e-6)) bounded = false;
+    // The ground is what the renderer would draw for an upward face of that albedo under this light.
+    const want = EARTH_ATMOSPHERE.groundAlbedo.map((g, c) => Math.pow(g, 1 / 2.2) * (0.85 * frame.ambientSky[c] + 0.6 * Math.max(0, frame.lightDir[1]) * frame.lightColor[c]));
+    if (want.some((v, c) => Math.abs(skyDisplay(frame.background[48 + c]) - v) > 1e-4)) shaded = false;
+    // A mix of ground and horizon: monotonic from one to the other.
+    const dir = Math.sign(ls[5] - ls[0]);
+    if (ls.some((v, i) => i > 0 && (v - ls[i - 1]) * dir < -1e-6)) between = false;
+    if (!(ls[5] > 0.004)) lit = false;
+    if (!(Math.abs(ls[0] - dl(h)) < Math.abs(ls[5] - dl(h)))) hazy = false;
+    // Above the horizon line (inside the dip) the backdrop is the sky's, untouched.
+    const up = skyBelowHorizon(frame.background, h, -Math.sin(dip * 0.5));
+    if (up.some((v, c) => v !== h[c])) sky = false;
+    // The uniform-air sum against the model's own march to the ground (in-scattered light only).
+    for (const deg of [1, 5]) {
+      const m = mu(deg), full = at(deg), g = frame.background.subarray(48, 51);
+      const d = frame.background[55] / (frame.background[51] * -m + Math.sqrt(frame.background[51] ** 2 * m * m - frame.background[55]));
+      const s = model.radiance(m, 0, st.sunDir[1]), hz = model.radiance(0, 0, st.sunDir[1]);
+      for (let c = 0; c < 3; c++) {
+        const haze = full[c] - g[c] * Math.exp(-frame.background[52 + c] * d);
+        const want = (s[c] / hz[c]) * h[c];
+        if (phase === 0.5 && Math.abs(haze - want) > 0.35 * want + 0.004) exact = false;
+      }
+    }
+  }
+  ok(bounded, "the backdrop below the horizon is never brighter than the horizon (noon, dusk, night)", rows.join("; "));
+  ok(between, "  it runs from the horizon's haze to the ground, one way, without a bump", rows.join("; "));
+  ok(lit && hazy, "  straight down is the lit ground, not black; towards the horizon it nears the horizon's colour", rows.join("; "));
+  ok(shaded, "  the ground is an upward face of the ground albedo under the frame's key light and ambient, as the renderer shades one");
+  ok(sky, "  a direction that misses the ground (inside the horizon's dip) keeps the sky's colour");
+  ok(exact, "  the haze matches the model's march to the ground at 1 and 5 degrees down (noon)");
+  console.log(`    ${rows.join("\n    ")}`);
+
+  const noon = timeOfDay(0.5);
+  const clear = physicalSkyFrame(model, noon), over = physicalSkyFrame(model, noon, ATMOSPHERES.overcast), rain = physicalSkyFrame(model, noon, ATMOSPHERES.storm);
+  const gl = (f: typeof clear) => lum([f.background[48], f.background[49], f.background[50]]);
+  const down = dl([clear.background[48], clear.background[49], clear.background[50]]);
+  ok(down > 0.3 && down < 0.7 && down < 0.75 * dl(model.state(noon.sunDir, noon.moonDir).horizonLinear), `at noon the ground straight down is a mid tone, well under the horizon (${down.toFixed(3)})`);
+  ok(gl(over) < gl(clear) && gl(rain) < gl(over), "cloud and rain darken the ground as they darken the scene's light");
+  ok(clear.background[51] > 6360 && clear.background[55] > 0 && clear.background[52] < clear.background[54], "the camera's radius, tangent length and the air's extinction (blue most) reach the shader");
+  ok(/P\[12\]/.test(PHYSICAL_SKY_WESL) && /P\[13\]/.test(PHYSICAL_SKY_WESL) && BACKGROUND_FLOATS >= 56, "the shader reads the ground's parameters, inside the renderer's background block");
 }
 
 console.log("scale:");

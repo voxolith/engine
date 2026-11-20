@@ -193,8 +193,9 @@ fn skyView(@builtin(global_invocation_id) id : vec3<u32>) {
 /**
  * The physical sky's background module (WESL), for `RendererOptions.background`: the sun's and
  * the moon's sky-view tables (`bgTex0`, `bgTex1`), sun and moon discs (limb darkening, the moon's
- * phase), stars sized from the pixel footprint, the fbm cloud layer lit by the sun and moon, and
- * the soft tone curve with display encoding. Reads the parameters `packPhysicalSky` writes
+ * phase), stars sized from the pixel footprint, the fbm cloud layer lit by the sun and moon, the
+ * ground below the horizon seen through the air's haze, and the soft tone curve with display
+ * encoding. Reads the parameters `packPhysicalSky` writes
  * (layout there). {@link makePhysicalSky} hands it over with its textures; it is not useful alone.
  */
 export const PHYSICAL_SKY_WESL = /* wgsl */ `
@@ -279,7 +280,7 @@ fn tone(x : vec3<f32>) -> vec3<f32> {
 fn background(rd : vec3<f32>, footprint : f32) -> vec3<f32> {
   let P = BG.params;
   let fp = max(footprint, 1e-5);
-  // Below the horizon: the horizon (the world stands in the haze).
+  // Below the horizon the sky is the horizon's, as the haze in front of the ground (at the end).
   var d = rd;
   if (rd.y < 0.0) {
     let hz = length(rd.xz);
@@ -334,6 +335,19 @@ fn background(rd : vec3<f32>, footprint : f32) -> vec3<f32> {
     let lm = pow(max(dot(d, md), 0.0), 5.0);
     let cc = P[8].xyz + P[6].xyz * (0.3 + 0.7 * ls) + P[7].xyz * (0.3 + 0.7 * lm);
     col = mix(col, cc, cloud);
+  }
+
+  // Below the horizon: the ground, through the air between it and the camera (aerial perspective
+  // over a Lambertian ground). That air is all but uniform, so over the distance to the ground it
+  // scatters in the horizon's light times 1 - exp(-extinction * distance); skyBelowHorizon in
+  // sky-model.ts is the same sum. The distance is to the planet's sphere, in a form that keeps
+  // its precision in f32 (c = r^2 - Rg^2).
+  let sn = -rd.y;
+  let disc = P[12].w * P[12].w * sn * sn - P[13].w;
+  if (sn > 0.0 && disc >= 0.0) {
+    let dist = P[13].w / (P[12].w * sn + sqrt(disc));
+    let through = exp(-P[13].xyz * dist);
+    col = mix(mix(P[12].xyz, col, 1.0 - through), col, cut);
   }
   return pow(tone(max(col, vec3<f32>(0.0))), vec3<f32>(1.0 / 2.2));
 }

@@ -14,6 +14,8 @@ import {
   makeSkyModel,
   MULTI_SCATTERING_N,
   packPhysicalSky,
+  packSkyGround,
+  skyGroundDisplay,
   skyDisplay,
   SKY_VIEW_H,
   SKY_VIEW_W,
@@ -76,7 +78,9 @@ const mix3 = (a: Vec3, b: Vec3, t: number): Vec3 => [a[0] + (b[0] - a[0]) * t, a
  * A physically based sky for the renderer, after Hillaire (EGSR 2020): Rayleigh, Mie and ozone
  * scattering from look-up tables built in compute shaders, a sun disc with limb darkening coloured
  * by the air it shines through, a moon with its phase that lights a bluish night sky, stars one or
- * two pixels wide at any resolution, and the drifting cloud layer, lit by the sun and moon. The
+ * two pixels wide at any resolution, and the drifting cloud layer, lit by the sun and moon. Below
+ * the horizon it shows the planet's ground (the atmosphere's `groundAlbedo`, shaded by the frame's own key light and ambient, as terrain is)
+ * fading into the horizon's haze with distance. The
  * scene's light comes from the same model: `frame()` returns the key light (sunlight, or
  * moonlight at night, through the atmosphere), sky and ground ambient, and a fog colour that
  * matches the horizon, all weather-aware.
@@ -170,7 +174,6 @@ export async function makePhysicalSky(gpu: PhysicalSkyGpu, opts: PhysicalSkyOpti
   };
 
   let destroyed = false;
-  (globalThis as any).__skyDebug = { trans, ms, sunView };
   return {
     background: { source: PHYSICAL_SKY_WESL, textures: [sunView.createView(), moonView.createView()] },
     model,
@@ -235,6 +238,8 @@ function physicalFrame(model: SkyModel, st: ReturnType<SkyModel["state"]>, atm: 
   };
   // Weather's effect on the light, precipitation, ground and water, as atmosphereFrame has it.
   const out = atmosphereFrame(lighting, atm, fo);
+  // The ground below the horizon, under the light this frame gives the scene (weather included).
+  packSkyGround(background, skyGroundDisplay(s.atm.groundAlbedo, out));
   out.background = background;
   out.skyTop = skyTop;
   out.skyHorizon = skyHorizon;
