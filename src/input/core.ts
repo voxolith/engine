@@ -127,6 +127,15 @@ export interface InputOptions {
  *
  * Edge queries (`pressed`, `released`, `padPressed`, `virtualPressed`, ...) report what changed
  * between the last two `update()` calls, so call `update()` once per frame before reading them.
+ *
+ * A tap shorter than a frame is not lost. A key, or a virtual value, that went down and up again
+ * between two `update()` calls reads as held for the one frame after them (`down`, `virtual`,
+ * with its `pressed` edge), and as released in the frame after that, just as a tap spanning two
+ * frames does; `active()` stays true in between, so that second frame is drawn. Anything
+ * multiplying a held key by the frame time therefore moves one frame's worth for such a tap,
+ * however long the frame was: clamp `dt` where a hitch must not turn into a jump. Gamepad buttons
+ * are polled in `update()` (the Gamepad API has no events), so a tap between two polls is not
+ * seen at all.
  */
 export interface Input {
   /** The surface the pointer and wheel listeners are on. */
@@ -143,11 +152,17 @@ export interface Input {
   /** The owner that claimed a pointer, if any. Claims are released when the pointer lifts. */
   claimedBy(pointerId: number): object | undefined;
 
-  /** Key held (by `KeyboardEvent.code`). */
+  /**
+   * Key held (by `KeyboardEvent.code`). Also true for the one frame in which a key was pressed
+   * and released again before `update()`, so a quick tap on a slow frame still counts as held.
+   */
   down(code: string): boolean;
-  /** Went down / up since the previous `update()`. */
+  /** Went down since the previous `update()`. */
   pressed(code: string): boolean;
-  /** Went up since the previous `update()`. */
+  /**
+   * Went up since the previous `update()`. For a key pressed and released within one frame this
+   * is the frame after its `pressed`: `down` is true in the first and false in the second.
+   */
   released(code: string): boolean;
   /** Only these codes have their default action prevented (so bound keys don't scroll). */
   captureKeys(codes: Iterable<string>): void;
@@ -163,9 +178,15 @@ export interface Input {
    * call this; a non-zero value also marks touch as the last device. 0 removes the entry.
    */
   setVirtual(name: string, value: number): void;
-  /** Current virtual value, 0 when unset. */
+  /**
+   * Current virtual value, 0 when unset. A value set and zeroed again before `update()` saw it
+   * reads as its last non-zero value for one frame, as a tapped key does.
+   */
   virtual(name: string): number;
-  /** Became non-zero / returned to zero between the last two `update()` calls. */
+  /**
+   * Became non-zero / returned to zero between the last two `update()` calls. A value set and
+   * zeroed within one frame is pressed in that frame and released in the next.
+   */
   virtualPressed(name: string): boolean;
   virtualReleased(name: string): boolean;
 
@@ -178,7 +199,10 @@ export interface Input {
 
   /** Once per frame, before reading: advances edges and polls the gamepad. */
   update(): void;
-  /** True while anything is being held; render continuously while it is. */
+  /**
+   * True while anything is being held; render continuously while it is. That includes the frame
+   * in which a sub-frame tap reads as held, so the frame that reports its release is drawn.
+   */
   active(): boolean;
   /** What was used last, for showing the right prompts or touch controls. */
   lastDevice(): Device;
@@ -255,6 +279,9 @@ export function createInput(el: EventTarget, opts: InputOptions = {}): Input {
   const held = new Set<string>();
   let pendDown = new Set<string>(), pendUp = new Set<string>();
   let frameDown = new Set<string>(), frameUp = new Set<string>();
+  // Keys pressed and released again before an update saw them down. `tapped` collects them;
+  // `latched` is the set the current frame reads as held, and their release is the next frame's.
+  let tapped = new Set<string>(), latched = new Set<string>();
   const captured = new Set<string>();
 
   let pad: GamepadState | null = null;
@@ -264,6 +291,8 @@ export function createInput(el: EventTarget, opts: InputOptions = {}): Input {
   const virt = new Map<string, number>();
   let prevVirt = new Map<string, number>();
   let virtDown = new Set<string>(), virtUp = new Set<string>();
+  // The same for virtual values: zeroed before an update saw them, with their last value.
+  let virtTapped = new Map<string, number>(), virtLatched = new Map<string, number>();
 
   let isLocked = false;
 
@@ -370,22 +399,28 @@ export function createInput(el: EventTarget, opts: InputOptions = {}): Input {
     if (!held.has(code)) {
       held.add(code);
       pendDown.add(code);
+      tapped.delete(code);
     }
     emit({ kind: "key", phase: "down", code, repeat: !!e.repeat, source: e });
   });
+  // A key going up. If no update has seen it down yet, the next one reads it as held for a frame
+  // and the one after gets the release; otherwise a tap inside one slow frame would move nothing.
+  const lift = (code: string) => {
+    held.delete(code);
+    if (pendDown.has(code)) tapped.add(code);
+    else pendUp.add(code);
+  };
   listen(keyTarget, "keyup", (e: KeyboardEvent) => {
     const code = e.code;
     if (!code || !held.has(code)) return;
-    held.delete(code);
-    pendUp.add(code);
+    lift(code);
     if (captured.has(code)) e.preventDefault?.();
     emit({ kind: "key", phase: "up", code, repeat: false, source: e });
   });
   // A key released while the window was unfocused never sends keyup: drop
   // everything held rather than leave the player walking forever.
   const releaseAll = () => {
-    for (const code of held) pendUp.add(code);
-    held.clear();
+    for (const code of [...held]) lift(code);
     loop?.invalidate();
   };
   listen(keyTarget, "blur", releaseAll);
@@ -418,7 +453,7 @@ export function createInput(el: EventTarget, opts: InputOptions = {}): Input {
     },
     claimedBy: (id) => claims.get(id),
 
-    down: (code) => held.has(code),
+    down: (code) => held.has(code) || latched.has(code),
     pressed: (code) => frameDown.has(code),
     released: (code) => frameUp.has(code),
     captureKeys(codes) {
@@ -430,13 +465,19 @@ export function createInput(el: EventTarget, opts: InputOptions = {}): Input {
     padReleased: (b) => padUp.has(b),
 
     setVirtual(name, value) {
-      if ((virt.get(name) ?? 0) === value) return;
-      if (value === 0) virt.delete(name);
-      else virt.set(name, value);
+      const was = virt.get(name) ?? 0;
+      if (was === value) return;
+      if (value === 0) {
+        virt.delete(name);
+        if (!prevVirt.get(name)) virtTapped.set(name, was); // no update saw it: hold it one frame
+      } else {
+        virt.set(name, value);
+        virtTapped.delete(name);
+      }
       if (value !== 0) setDevice("touch");
       loop?.invalidate();
     },
-    virtual: (name) => virt.get(name) ?? 0,
+    virtual: (name) => virt.get(name) ?? virtLatched.get(name) ?? 0,
     virtualPressed: (name) => virtDown.has(name),
     virtualReleased: (name) => virtUp.has(name),
 
@@ -451,15 +492,21 @@ export function createInput(el: EventTarget, opts: InputOptions = {}): Input {
     update() {
       frameDown = pendDown;
       frameUp = pendUp;
+      latched = tapped;
       pendDown = new Set();
-      pendUp = new Set();
+      pendUp = new Set(tapped); // a tap inside the frame: held now, released next frame
+      tapped = new Set();
 
-      // Virtual edges: compare with the values at the previous update.
+      // Virtual edges: compare with the values at the previous update, a tap counting as set.
+      virtLatched = virtTapped;
+      virtTapped = new Map();
+      const seen = new Map(virtLatched);
+      for (const [k, v] of virt) seen.set(k, v);
       virtDown = new Set();
       virtUp = new Set();
-      for (const [k, v] of virt) if (v !== 0 && !(prevVirt.get(k))) virtDown.add(k);
-      for (const [k, v] of prevVirt) if (v !== 0 && !virt.get(k)) virtUp.add(k);
-      prevVirt = new Map(virt);
+      for (const [k, v] of seen) if (v !== 0 && !(prevVirt.get(k))) virtDown.add(k);
+      for (const [k, v] of prevVirt) if (v !== 0 && !seen.get(k)) virtUp.add(k);
+      prevVirt = seen;
 
       // Gamepad: first connected, standard mapping.
       padDown = new Set();
@@ -497,7 +544,7 @@ export function createInput(el: EventTarget, opts: InputOptions = {}): Input {
     },
 
     active() {
-      if (held.size || pointers.size || virt.size) return true;
+      if (held.size || pointers.size || virt.size || latched.size || virtLatched.size) return true;
       if (!pad) return false;
       const a = pad.axes;
       if (a.LeftX || a.LeftY || a.RightX || a.RightY) return true;
@@ -516,6 +563,10 @@ export function createInput(el: EventTarget, opts: InputOptions = {}): Input {
       pointers.clear();
       held.clear();
       virt.clear();
+      tapped.clear();
+      latched.clear();
+      virtTapped.clear();
+      virtLatched.clear();
       if (isLocked) lockTarget?.exitPointerLock?.();
     },
   };

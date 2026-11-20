@@ -203,6 +203,119 @@ console.log("keyboard:");
   ok(a.pressed("jump"), "an action is pressed by its key");
   ok(r.invalidations > 0, "events invalidate the frame loop");
 }
+console.log("taps shorter than a frame:");
+{
+  const r = rig();
+  const i = r.input;
+  const a = makeActions(i, {
+    walk: axis({ negative: ["key:KeyS"], positive: ["key:KeyW"] }),
+    jump: button("key:Space", "touch:jump"),
+    steer: axis({ analog: ["touch:stick.x"] }),
+  });
+  const look = makeLookController(i, { keys: { right: ["KeyL"] }, keyRate: 1 });
+
+  r.key("keydown", "KeyW");
+  r.key("keyup", "KeyW");
+  i.update();
+  ok(i.down("KeyW") && i.pressed("KeyW") && !i.released("KeyW"), "a key pressed and released between two updates reads held and pressed for one frame");
+  ok(a.value("walk") === 1 && a.down("walk") && a.pressed("walk") && !a.released("walk"), "  a level-driven action sees it");
+  ok(i.active(), "  the input stays active, so the frame with the release is drawn");
+  i.update();
+  ok(!i.down("KeyW") && !i.pressed("KeyW") && i.released("KeyW"), "  the next frame it is up and released: never stuck");
+  ok(a.value("walk") === 0 && a.released("walk") && !i.active(), "  the action is released and the input idle");
+  i.update();
+  ok(!i.down("KeyW") && !i.pressed("KeyW") && !i.released("KeyW"), "  and nothing after that");
+
+  r.key("keydown", "KeyW");
+  i.update();
+  const f1 = i.down("KeyW") && i.pressed("KeyW") && !i.released("KeyW");
+  i.update();
+  const f2 = i.down("KeyW") && !i.pressed("KeyW") && !i.released("KeyW");
+  r.key("keyup", "KeyW");
+  i.update();
+  const f3 = !i.down("KeyW") && !i.pressed("KeyW") && i.released("KeyW");
+  i.update();
+  ok(f1 && f2 && f3 && !i.down("KeyW") && !i.released("KeyW"), "a normal hold is unchanged: pressed once, held, released in the frame the key went up");
+
+  r.key("keydown", "KeyW");
+  r.key("keyup", "KeyW");
+  r.key("keydown", "KeyW");
+  i.update();
+  ok(i.down("KeyW") && i.pressed("KeyW") && !i.released("KeyW"), "press, release, press in one frame is a held key");
+  i.update();
+  ok(i.down("KeyW") && !i.released("KeyW"), "  still held the frame after (no late release)");
+  r.key("keyup", "KeyW");
+  i.update();
+  ok(!i.down("KeyW") && i.released("KeyW"), "  and released when it goes up");
+
+  r.key("keydown", "KeyW");
+  r.key("keyup", "KeyW");
+  i.update();
+  r.key("keydown", "KeyW");
+  i.update();
+  ok(i.down("KeyW") && i.pressed("KeyW") && i.released("KeyW"), "a tap, then a new press in the next frame: the tap's release and the press arrive together");
+  r.key("keyup", "KeyW");
+  i.update();
+  i.update();
+
+  r.key("keydown", "KeyW");
+  r.key("keydown", "KeyS");
+  r.key("keyup", "KeyW");
+  r.key("keyup", "KeyS");
+  i.update();
+  ok(a.value("walk") === 0 && i.down("KeyW") && i.down("KeyS"), "two opposing keys tapped in one frame cancel on their axis");
+  i.update();
+  ok(!i.down("KeyW") && !i.down("KeyS") && a.value("walk") === 0, "  and both are up the frame after");
+
+  r.key("keydown", "KeyW");
+  fire(r.keys, "blur", {});
+  i.update();
+  const blurHeld = i.down("KeyW");
+  i.update();
+  ok(blurHeld && !i.down("KeyW") && i.released("KeyW"), "a key lost to a blur in the frame it went down is held one frame, then released");
+
+  r.key("keydown", "KeyL");
+  r.key("keyup", "KeyL");
+  i.update();
+  look.update(0.5);
+  const y1 = look.yaw();
+  i.update();
+  look.update(0.5);
+  ok(Math.abs(y1 - 0.5) < 1e-9 && look.yaw() === y1, "the look controller turns one frame's worth for a tapped key, then stops", `${y1} then ${look.yaw()}`);
+
+  i.setVirtual("jump", 1);
+  i.setVirtual("jump", 0);
+  i.update();
+  ok(i.virtual("jump") === 1 && i.virtualPressed("jump") && !i.virtualReleased("jump"), "a touch button tapped between two updates reads set and pressed for one frame");
+  ok(a.pressed("jump") && a.down("jump") && i.active(), "  its action is pressed and down, and the input active");
+  i.update();
+  ok(i.virtual("jump") === 0 && !i.virtualPressed("jump") && i.virtualReleased("jump") && a.released("jump") && !i.active(), "  the next frame it is zero and released");
+  i.update();
+  ok(i.virtual("jump") === 0 && !i.virtualReleased("jump"), "  and nothing after that");
+
+  i.setVirtual("stick.x", -0.6);
+  i.setVirtual("stick.x", 0);
+  i.update();
+  const flick = a.value("steer");
+  i.update();
+  ok(Math.abs(flick + 0.6) < 1e-9 && a.value("steer") === 0, "a joystick flicked within one frame steers that frame with its last value", `${flick}`);
+
+  i.setVirtual("jump", 1);
+  i.update();
+  i.update();
+  const heldV = i.virtual("jump") === 1 && !i.virtualPressed("jump");
+  i.setVirtual("jump", 0);
+  i.update();
+  ok(heldV && i.virtual("jump") === 0 && i.virtualReleased("jump"), "a held touch button is unchanged: zero and released in the frame it was let go");
+
+  const pad = (a0: number) => ({ id: "p", connected: true, axes: [0, 0, 0, 0], buttons: [{ value: a0, pressed: a0 > 0.5 }] }) as unknown as Gamepad;
+  r.pads[0] = pad(0);
+  i.update();
+  r.pads[0] = pad(1);
+  r.pads[0] = pad(0);
+  i.update();
+  ok(!i.padPressed("A") && i.gamepad()!.buttons.A === 0, "a pad button tapped between two polls is not seen (the Gamepad API is polled)");
+}
 {
   const typing = new Surface() as Surface & { tagName: string };
   typing.tagName = "INPUT";

@@ -74,6 +74,8 @@ CI (`ci.yml`, job `typecheck`) runs both, with `renderer` checked out alongside.
   yaw conventions are fixed:
   - `firstPersonFrame` screen-right is `cross(forward, up)`, so turning right increases yaw;
   - an orbit camera's yaw decreases when dragging right.
+  - A key or virtual value tapped between two `update()` calls reads as held for one frame and
+    released the next (`core.ts`, `tapped` / `latched`); pad buttons are polled, so not covered.
   - `verify-input` drives it with synthetic events.
 - **Import rules.** Browser code imports `@voxolith/renderer`; anything that runs in bun (tools,
   workers' pure parts) imports `@voxolith/renderer/core`.

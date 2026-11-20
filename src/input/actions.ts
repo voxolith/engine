@@ -52,6 +52,11 @@ export const axis = (b: Omit<AxisBinding, "kind">): AxisBinding => ({ kind: "axi
 /**
  * Named game controls over an input, from {@link makeActions}. Values are read live from the
  * input; edges (`pressed`, `released`) follow its `update()`.
+ *
+ * A key or on-screen control tapped within one frame still reads as held for that frame and as
+ * released in the next (see {@link Input}), so `value` and `down` see it; two opposing keys of an
+ * axis tapped in the same frame cancel, as they do when both are held. A value multiplied by the
+ * frame time moves one frame's worth for such a tap, so clamp `dt` against hitches.
  */
 export interface Actions<B extends Bindings = Bindings> {
   /** Held (a button), or pushed past half-way (an axis, either direction). */
