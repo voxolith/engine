@@ -41,8 +41,8 @@ CI (`ci.yml`, job `typecheck`) runs both, with `renderer` checked out alongside.
   `makeSceneWorker` / `serveScene` (`scene.ts`): model encoding (`encodeModel`) and the static
   placement bake on one worker, for `makeInstanceLayer(target, { worker })` and
   `layer.commitAsync()`; the worker keeps each encoding's sub-cells, so registering it for
-  placement sends only keys. `makePlacementWorker` / `servePlacement` (`placement.ts`) are its
-  older, bake-only names (deprecated), for `{ placement }`.
+  placement sends only keys. Given as `{ placement }` instead, the same worker only bakes
+  (`placement.ts`: the bake-only message types).
   `serveScene({ cache })` keeps encodings and bakes in IndexedDB (`scene-cache.ts`, on the same
   `CacheStore` as the model cache; `openSceneCacheControls`): encodings by the model's identity
   (`makeInstanceLayer({ modelKey: pool.modelKey })`, or `hashModels`), bakes by a digest of the
@@ -92,8 +92,9 @@ CI (`ci.yml`, job `typecheck`) runs both, with `renderer` checked out alongside.
   depends on its siblings as `"workspace:*"`. Run `bun install` from that root, never inside a
   repo. [CONTRIBUTING](https://github.com/voxolith/.github/blob/main/CONTRIBUTING.md) lists
   which siblings each repo needs.
-- **Toolchain: bun only.** There is no npm or node step anywhere. It is TypeScript 7 and Vite 8;
-  scripts run `tsc`, `vite` and `bun tools/x.ts`. Use current dependency versions.
+- **Toolchain: bun.** It is the only toolchain used locally (node is installed, but nothing here
+  needs it). CI is different: GitHub runners have Node and run Vite on Node. It is TypeScript 7
+  and Vite 8; scripts run `tsc`, `vite` and `bun tools/x.ts`. Use current dependency versions.
 - **`tsconfig.base.json` is byte-identical in every repo**, because consumers compile the
   renderer's and engine's sources under their own flags. Change it everywhere or nowhere.
 - **WebGPU, not WebGL.** Dev servers are HTTPS (`@vitejs/plugin-basic-ssl`), because WebGPU needs a

@@ -471,9 +471,9 @@ export interface SceneWorkerOptions {
 }
 
 /**
- * A worker that bakes static placements, from {@link makeSceneWorker} (or the older
- * {@link makePlacementWorker}). Give it to `makeInstanceLayer(target, { placement })`, which
- * registers models and bakes for you; the methods are there for hosts that drive
+ * A worker that bakes static placements, from {@link makeSceneWorker}. Give it to
+ * `makeInstanceLayer(target, { placement })`, which registers models and bakes for you; the
+ * methods are there for hosts that drive
  * `Renderer.placementInput` / `applyPlacement` themselves. One worker can serve several layers
  * and renderers: model keys are unique on the page.
  */

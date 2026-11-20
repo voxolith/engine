@@ -19,9 +19,8 @@
  *
  * A second worker, the scene worker, encodes models for the GPU and bakes static instance
  * placements ({@link makeSceneWorker} on the main thread, {@link serveScene} in the worker), for
- * `makeInstanceLayer(target, { worker })` and its `commitAsync()`. {@link makePlacementWorker} and
- * {@link servePlacement} are its older, bake-only names. With its `cache` option it keeps the
- * encodings and bakes in IndexedDB too ({@link openSceneCache}, {@link openSceneCacheControls}),
+ * `makeInstanceLayer(target, { worker })` and its `commitAsync()`. With its `cache` option it keeps
+ * the encodings and bakes in IndexedDB too ({@link openSceneCache}, {@link openSceneCacheControls}),
  * so a warm visit skips both.
  *
  * Ground chunks fill on workers too: {@link makeChunkFillPool} on the main thread is a
@@ -52,7 +51,6 @@ export { makeSceneWorker, serveScene } from "./scene";
 export type { SceneWorker, SceneWorkerOptions, SceneEncodeOptions, ServeSceneOptions, ServeSceneCacheOptions, SceneRequest, SceneResponse, EncodeSource } from "./scene";
 export { openSceneCache, openSceneCacheOn, makeSceneCache, openSceneCacheControls, makeSceneCacheControls } from "./scene-cache";
 export type { SceneCache, SceneCacheOptions, SceneCacheEntry, SceneCacheFilter, SceneCacheControls, SceneCacheKind } from "./scene-cache";
-export { makePlacementWorker, servePlacement } from "./placement";
-export type { PlacementWorker, PlacementWorkerOptions, ServePlacementOptions, PlacementRequest, PlacementResponse } from "./placement";
+export type { PlacementWorker, PlacementRequest, PlacementResponse } from "./placement";
 export { makeChunkFillPool, serveChunks } from "./chunks";
 export type { ChunkFill, ChunkFillPool, ChunkFillPoolOptions, ServeChunksOptions, ChunkRequest, ChunkResponse } from "./chunks";

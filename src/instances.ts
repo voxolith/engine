@@ -745,8 +745,8 @@ export interface InstanceLayerOptions {
    */
   worker?: SceneWorker;
   /**
-   * Bake static sets on this worker ({@link makePlacementWorker}, or a {@link makeSceneWorker}
-   * one used for bakes only) when committed with `commitAsync()`; models are uploaded on the main
+   * Bake static sets on this worker (a {@link makeSceneWorker} one, used for bakes only) when
+   * committed with `commitAsync()`; models are uploaded on the main
    * thread. The layer sends each model a static set names once (after its upload) and drops it on
    * the worker when the model is released. Without it (or `worker`), and for `commit()`, the
    * static set is placed synchronously, as before.

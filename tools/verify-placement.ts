@@ -2,7 +2,7 @@
 //
 // The instance layer's commitAsync against a fake target that bakes with the renderer's real
 // bakePlacement (so the sync commit and the async one run the same code), and a real
-// servePlacement worker side (a PlacementBaker) behind a fake message channel that structured-
+// serveScene worker side (a PlacementBaker) behind a fake message channel that structured-
 // clones every message, as postMessage does. Covered: the applied result equals the sync
 // commit's, byte for byte; the placement phase spans request to apply; a moving set committed
 // during a bake; stale replies (superseded async and sync commits); abort; a model released
@@ -13,7 +13,8 @@
 
 import { bakePlacement, type PlacementBake, type PlacementInput, type PlacementModel } from "@voxolith/renderer/core";
 import { makeInstanceLayer, type EntityPlacement, type InstancePlacement, type InstanceTarget } from "../src/instances";
-import { makePlacementWorker, servePlacement, type PlacementRequest, type PlacementResponse } from "../src/worker/placement";
+import { makeSceneWorker, serveScene } from "../src/worker/scene";
+import type { PlacementRequest, PlacementResponse } from "../src/worker/placement";
 import { LOAD_PHASES, makeLoadTracker, type LoadEvent } from "../src/load";
 import type { EntityModel } from "../src/entity";
 
@@ -110,7 +111,7 @@ function channel() {
       else setTimeout(() => toMain?.({ data: copy } as MessageEvent<PlacementResponse>), 0);
     },
   };
-  servePlacement({ scope });
+  serveScene({ scope });
   const worker = {
     set onmessage(fn: typeof toMain) { toMain = fn; },
     onerror: null as ((ev: ErrorEvent) => void) | null,
@@ -165,7 +166,7 @@ console.log("async commit = sync commit:");
   const events: LoadEvent[] = [];
   load.on((e) => events.push(e));
   const ch = channel();
-  const placement = makePlacementWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
+  const placement = makeSceneWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
   const t = fakeTarget();
   const layer = makeInstanceLayer(t, { load, placement });
   layer.setStatic(set);
@@ -189,7 +190,7 @@ console.log("async commit = sync commit:");
 console.log("the moving set during a bake:");
 {
   const ch = channel();
-  const placement = makePlacementWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
+  const placement = makeSceneWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
   const t = fakeTarget();
   const layer = makeInstanceLayer(t, { placement });
   layer.setStatic(scene([tree], 20, 1));
@@ -216,7 +217,7 @@ console.log("stale replies:");
 {
   const load = makeLoadTracker();
   const ch = channel();
-  const placement = makePlacementWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
+  const placement = makeSceneWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
   const t = fakeTarget();
   const layer = makeInstanceLayer(t, { load, placement });
   ch.state.hold = true;
@@ -253,7 +254,7 @@ console.log("abort:");
 {
   const load = makeLoadTracker();
   const ch = channel();
-  const placement = makePlacementWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
+  const placement = makeSceneWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
   const t = fakeTarget();
   const layer = makeInstanceLayer(t, { load, placement });
   ch.state.hold = true;
@@ -294,7 +295,7 @@ console.log("abort:");
 console.log("models released and added again:");
 {
   const ch = channel();
-  const placement = makePlacementWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
+  const placement = makeSceneWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
   const t = fakeTarget();
   const layer = makeInstanceLayer(t, { placement });
   const set = scene([tree, rock, bush], 120, 8);
@@ -328,7 +329,7 @@ console.log("models released and added again:");
 console.log("failure and fallbacks:");
 {
   const ch = channel();
-  const placement = makePlacementWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
+  const placement = makeSceneWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
   const t = fakeTarget();
   const layer = makeInstanceLayer(t, { placement });
   layer.setStatic(scene([tree], 10, 1));
@@ -341,7 +342,7 @@ console.log("failure and fallbacks:");
   layer.commit();
   ok(t.staticSets === 1, "  the set counts as unsent: commit() places it synchronously");
   await placement.destroy();
-  ok(ch.state.terminated && (await placement.bake(t.placementInput([])).catch((err) => err.message)) === "placement worker destroyed", "destroy terminates the worker");
+  ok(ch.state.terminated && (await placement.bake(t.placementInput([])).catch((err) => err.message)) === "scene worker destroyed", "destroy terminates the worker");
 
   const plain = fakeTarget();
   const noWorker = makeInstanceLayer(plain);
@@ -352,7 +353,7 @@ console.log("failure and fallbacks:");
   const bare = fakeTarget() as Partial<ReturnType<typeof fakeTarget>>;
   delete bare.applyPlacement;
   const ch2 = channel();
-  const w2 = makePlacementWorker({ spawn: ch2.spawn, closeTimeoutMs: 50 });
+  const w2 = makeSceneWorker({ spawn: ch2.spawn, closeTimeoutMs: 50 });
   const old = makeInstanceLayer(bare as unknown as InstanceTarget, { placement: w2 });
   old.setStatic(scene([tree], 10, 1));
   let threw = false;
@@ -397,7 +398,7 @@ console.log("progress during a bake:");
 {
   const load = makeLoadTracker();
   const ch = scripted();
-  const placement = makePlacementWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
+  const placement = makeSceneWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
   const t = fakeTarget();
   const layer = makeInstanceLayer(t, { load, placement });
   const seen: { done: number; total: number; applied: boolean }[] = [];
@@ -480,10 +481,10 @@ console.log("progress during a bake:");
   placement.destroy();
 }
 
-console.log("makePlacementWorker.bake onProgress:");
+console.log("makeSceneWorker.bake onProgress:");
 {
   const ch = scripted();
-  const placement = makePlacementWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
+  const placement = makeSceneWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
   const t = fakeTarget();
   const got: string[] = [];
   const input = t.placementInput([]);
@@ -505,14 +506,14 @@ console.log("makePlacementWorker.bake onProgress:");
   placement.destroy();
 }
 
-console.log("servePlacement posts progress:");
+console.log("serveScene posts progress:");
 {
   const ch = channel();
   const t = fakeTarget();
   const layer = makeInstanceLayer(t);
   for (const m of [tree, rock, bush]) layer.models.id(m);
   const list = scene([tree, rock, bush], 300, 12).map((p) => ({ model: layer.models.id(p.model), x: p.x, y: p.y, z: p.z, anchor: p.model.anchor, yaw: p.yaw, mirror: p.mirror, base: p.base }));
-  const placement = makePlacementWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
+  const placement = makeSceneWorker({ spawn: ch.spawn, closeTimeoutMs: 50 });
   for (let id = 0; id < 3; id++) placement.register(t.placementModel(id)!);
   const prog: [number, number][] = [];
   await placement.bake(t.placementInput(list), { onProgress: (d, n) => prog.push([d, n]) });
