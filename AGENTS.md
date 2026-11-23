@@ -15,7 +15,7 @@ It never authors models: generators bake them, the engine consumes them.
 
 ```sh
 bun run --cwd engine typecheck
-bun run --cwd engine verify   # verify, -input, -atmosphere, -animation, -dynamic, -chunks, -instances, -load, -pool, -placement, -scene, -scene-cache, -pwa
+bun run --cwd engine verify   # verify, -input, -atmosphere, -animation, -dynamic, -chunks, -instances, -load, -pool, -placement, -scene, -scene-split, -scene-cache, -pwa
 ```
 
 CI (`ci.yml`, job `typecheck`) runs both, with `renderer` checked out alongside.
@@ -49,6 +49,15 @@ CI (`ci.yml`, job `typecheck`) runs both, with `renderer` checked out alongside.
   input and the models' placement data (`hash.ts`), stored `normalizePlacement`d and bound with `bindPlacement`, since the
   renderer numbers models by free slot. Generator workers post entities packed (`PackedEntity`,
   one transferred buffer); transferring one buffer per brick took seconds.
+  A bake is split over up to `bakeWorkers` workers (default cores - 1, at most 4 where the pointer
+  is coarse and 8 elsewhere; 1 is the single-worker path, message for message): the scene worker
+  looks in the cache, cuts a miss with at least two shares of `bakeShareUnits` (2 million marking
+  units) into ranges (`split`), bakes the first and merges the helpers' shares (`merge`), so the
+  bake, its cache key and everything in `instances.ts` are unchanged. Helpers come from the same
+  `spawn` at the first split bake, run the same `serveScene`, get only `model` / `share` /
+  `cancel` / `drop`, are fed the models the set names from the main thread's own references
+  (4 MiB a task) and are terminated `bakeIdleMs` (5 s) after the last split bake.
+  `verify-scene-split` checks 1 to 4 workers against `commit()` on a farm of fake workers.
 - `src/input/`: `createInput`, `prepareSurface`, orbit and look controllers, gestures, actions
   and touch controls.
 - `src/atmosphere/`: `timeOfDay`, `ATMOSPHERES`, blending, `atmosphereFrame` (which packs the sky

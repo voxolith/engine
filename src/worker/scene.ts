@@ -17,14 +17,26 @@
 // bake can only start once its models are registered). It is not the generator pool's job: a
 // generator worker runs one synchronous generation after another, so a bake queued behind one
 // would wait seconds for it, and the registrations would have to be repeated on every worker.
+//
+// Several workers for one bake (`SceneWorkerOptions.bakeWorkers`): marking the sub-cell tables is
+// nearly all of a bake and splits exactly over ranges of the instances (the renderer's
+// `splitPlacement` / `bakePlacementShare` / `mergePlacementShares`). The first worker stays the
+// scene worker: it alone encodes, holds the cache and answers every bake. A bake that misses the
+// cache and is big enough it cuts into ranges (`split`), bakes the first itself and names the
+// others to the main thread, which hands each to a helper worker (spawned then, from the same
+// `spawn`, and sent the models the set names) and passes the helpers' shares back (`merge`). The
+// first worker merges, stores and answers `baked` as for a bake of its own, so the result, the
+// cache and everything above this file are the same as with one worker.
 
 import {
   PlacementBaker,
   bindPlacement,
   encodeModel,
+  mergePlacementShares,
   normalizePlacement,
   encodedTransferables,
   placementModelOf,
+  placementShareTransferables,
   placementTransferables,
   type EncodedModel,
   type ModelSource,
@@ -32,6 +44,8 @@ import {
   type PlacementInput,
   type PlacementKeys,
   type PlacementModel,
+  type PlacementRange,
+  type PlacementShare,
 } from "@voxolith/renderer/core";
 import { checkCacheCap, type CacheStore } from "./cache";
 import { Hasher } from "./hash";
@@ -57,7 +71,15 @@ export interface EncodeSource {
   partBoxes?: Int32Array;
 }
 
-/** A message to a scene worker. Everything but `chunk`, `lookup`, `cancel` and `close` applies in the order sent. */
+/** How a `bake` may be split over several workers ({@link SceneWorkerOptions.bakeWorkers}). */
+export interface BakeSplit {
+  /** The most workers to split over, this one included. */
+  workers: number;
+  /** The least marking work per share ({@link SceneWorkerOptions.bakeShareUnits}). */
+  shareUnits: number;
+}
+
+/** A message to a scene worker. Everything but `chunk`, `lookup`, `merge`, `cancel` and `close` applies in the order sent. */
 export type SceneRequest =
   /** Register a model for placement (`Renderer.placementModel`) under its key. */
   | { kind: "model"; model: PlacementModel }
@@ -66,8 +88,24 @@ export type SceneRequest =
   /**
    * Bake a static set (`Renderer.placementInput`); answered by `baked` or `error` with this `id`,
    * after `progress` messages while it runs.
+   *
+   * With `split`, a bake that misses the cache and has enough marking work for two or more shares
+   * is split: the worker answers `split` with the ranges, bakes the first share itself, and waits
+   * for a `merge` with the others before it answers `baked`. Otherwise it bakes alone, as without.
    */
-  | { kind: "bake"; id: number; input: PlacementInput; /** `false`: neither read nor write the worker's cache. */ cache?: boolean }
+  | { kind: "bake"; id: number; input: PlacementInput; /** `false`: neither read nor write the worker's cache. */ cache?: boolean; split?: BakeSplit }
+  /**
+   * Bake one share of a split bake (`PlacementBaker.bakeShare`): the instances of `range`, one of
+   * the ranges a `split` named. Answered by `shared` or `error` with this `id`, after `progress`
+   * messages for this share alone. Every model the input names must be registered. Never cached.
+   */
+  | { kind: "share"; id: number; input: PlacementInput; range: PlacementRange }
+  /**
+   * The other workers' shares of the split bake `id`: the worker joins them with its own
+   * (`mergePlacementShares`), stores the bake if it caches, and answers `baked` (or `error`).
+   * Ignored when the bake was cancelled meanwhile.
+   */
+  | { kind: "merge"; id: number; shares: PlacementShare[] }
   /**
    * Some of the bricks of sparse model `id` (encoded by the `encode` that follows): `keys[i]` is
    * the brick key of bytes `[i * 512, i * 512 + 512)` of `bricks`.
@@ -103,20 +141,33 @@ export type SceneRequest =
    */
   | { kind: "keys"; id: number; keys: PlacementKeys | PlacementKeys[] }
   /**
-   * Skip job `id` (a bake or an encode) if it has not started, and forget encoding `id` if it
-   * is kept. A running job cannot be stopped.
+   * Skip job `id` (a bake, a share or an encode) if it has not started, forget encoding `id` if
+   * it is kept, and drop the share of a split bake `id` waiting for its `merge`. A running job
+   * cannot be stopped.
    */
   | { kind: "cancel"; id: number };
 
-/** A scene worker's answer to a `bake` or an `encode`. */
+/** A scene worker's answer to a `bake`, a `share` or an `encode`. */
 export type SceneResponse =
+  /**
+   * Bake `id` is split over these ranges (`PlacementBaker.split`): the worker is baking the first
+   * (the one with `pack`) and wants the shares of the others that are not empty in a `merge`.
+   * At least one other range is not empty.
+   */
+  | { kind: "split"; id: number; ranges: PlacementRange[] }
+  /** One share of a split bake, its buffers transferred; `ms` is how long the worker spent on it. */
+  | { kind: "shared"; id: number; share: PlacementShare; ms: number }
   /**
    * The job is running: `done` of `total` opaque work units (read `done / total` as a fraction),
    * posted from inside it, about every 50 ms. The first is `done` 0, the last `done === total`,
    * and `done` never decreases.
    */
   | { kind: "progress"; id: number; done: number; total: number }
-  /** The bake, its buffers transferred; `ms` is how long the worker spent on it; `cached` when it came from the worker's cache. */
+  /**
+   * The bake, its buffers transferred; `ms` is how long the worker spent on it (for a split bake,
+   * from its start to the end of the merge, waiting for the other shares included); `cached` when
+   * it came from the worker's cache.
+   */
   | { kind: "baked"; id: number; bake: PlacementBake; ms: number; cached?: boolean }
   /** The encoded model, its buffers transferred; `ms` is how long the worker spent on it; `cached` when it came from the worker's cache. */
   | { kind: "encoded"; id: number; encoded: EncodedModel; ms: number; cached?: boolean }
@@ -178,6 +229,9 @@ export interface ServeSceneCacheOptions extends SceneCacheOptions {
  * for a job that has not started skips it. A job that has started runs to the end: it is one
  * synchronous call. A stale result costs worker time only; the main thread drops it.
  *
+ * The same function serves the helpers of a split bake ({@link SceneWorkerOptions.bakeWorkers}):
+ * they are spawned from the same worker entry and are only ever sent models and shares to bake.
+ *
  * With `cache`, results are kept in IndexedDB and served from there next time (see
  * {@link ServeSceneOptions.cache}), salted with this worker's URL, so a production build (which
  * hashes the URL) never serves what older renderer code made. Writes finish after the result is
@@ -202,6 +256,11 @@ export function serveScene(opts: ServeSceneOptions = {}): void {
   let highest = 0; // the highest job id taken off the queue
   let scheduled = false;
   let running = false;
+  /** The job running now (0 for none), and whether a `cancel` for it came while it awaited the cache. */
+  let current = 0;
+  let currentCancelled = false;
+  /** Split bakes whose own share is done, by bake id, until their `merge` (or a cancel). */
+  const splitting = new Map<number, { input: PlacementInput; share: PlacementShare; digest: string | undefined; store: SceneCache | null; t0: number }>();
 
   // --- the cache ---
   const salt = String((globalThis as { location?: { href: string } }).location?.href ?? "worker");
@@ -296,6 +355,33 @@ export function serveScene(opts: ServeSceneOptions = {}): void {
     return h.digest();
   };
 
+  /**
+   * The ranges to split a bake over, or undefined when it should be baked alone: its marking work
+   * (an instance's occupied sub-cells, times its pieces when scaled and turned, or its box's
+   * bricks when posed: the renderer's units, which it does not export, so mirrored here) allows fewer than two shares of `shareUnits`, or fewer
+   * than two ranges have instances (one instance outweighs the rest).
+   */
+  const planSplit = (input: PlacementInput, split: BakeSplit): PlacementRange[] | undefined => {
+    const perModel: number[] = [], perPosed: number[] = [];
+    let units = 0;
+    for (const p of input.instances) {
+      const m = registered.get(input.models[p.model]);
+      if (!m) continue; // the split below throws, as the bake would
+      if (p.parts && m.partBoxes) units += perPosed[p.model] ??= (Math.ceil(m.size.x / 8) + 2) * (Math.ceil(m.size.y / 8) + 2) * (Math.ceil(m.size.z / 8) + 2);
+      else {
+        // A scaled model's sub-cells are marked in pieces of at most a brick when it is turned off
+        // the axes (the renderer's `subPieces`: ceil(scale / 4) a side).
+        const scale = m.scale ?? 1;
+        const turned = scale > 1 && (p.rotation !== undefined || (p.yaw !== undefined && Math.abs(Math.sin(2 * p.yaw)) > 1e-9));
+        units += (perModel[p.model] ??= m.subs.length / 3) * (turned ? Math.ceil(scale / 4) ** 3 : 1);
+      }
+    }
+    const n = Math.min(Math.floor(split.workers), Math.floor(units / Math.max(1, split.shareUnits)));
+    if (!(n >= 2)) return undefined;
+    const ranges = baker.split(input, n);
+    return ranges.filter((r) => r.hi > r.lo).length >= 2 ? ranges : undefined;
+  };
+
   const schedule = () => {
     if (scheduled || running) return;
     scheduled = true;
@@ -327,10 +413,16 @@ export function serveScene(opts: ServeSceneOptions = {}): void {
     }
   }
 
-  async function job(m: Extract<SceneRequest, { kind: "bake" | "encode" }>): Promise<void> {
+  async function job(m: Extract<SceneRequest, { kind: "bake" | "share" | "encode" }>): Promise<void> {
     const t0 = performance.now();
     const id = m.id;
     const onProgress = (done: number, total: number) => scope.postMessage({ kind: "progress", id, done, total });
+    if (m.kind === "share") {
+      // A helper's whole job: no cache, the range as given.
+      const share = baker.bakeShare(m.input, m.range, { onProgress });
+      scope.postMessage({ kind: "shared", id, share, ms: performance.now() - t0 }, placementShareTransferables(share));
+      return;
+    }
     const store = m.kind === "bake" && m.cache === false ? null : await cache;
     if (m.kind === "bake") {
       const digest = store ? bakeDigest(m.input) : undefined;
@@ -346,6 +438,19 @@ export function serveScene(opts: ServeSceneOptions = {}): void {
       if (bound) {
         scope.postMessage({ kind: "baked", id, bake: bound, ms: performance.now() - t0, cached: true }, placementTransferables(bound));
         return;
+      }
+      if (m.split) {
+        // Cancelled while the cache was read: a split would only start the other workers too.
+        if (currentCancelled) return;
+        const ranges = planSplit(m.input, m.split);
+        if (ranges) {
+          // Named before the share is baked, so the others start while this one works. No await
+          // from here to the `set`: the merge (or a cancel) finds the share there.
+          scope.postMessage({ kind: "split", id, ranges });
+          const share = baker.bakeShare(m.input, ranges[0], { onProgress });
+          splitting.set(id, { input: m.input, share, digest, store, t0 });
+          return;
+        }
       }
       const bake = baker.bake(m.input, { onProgress });
       // Stored with its model ids normalised; putBake copies before its first await, and the
@@ -394,18 +499,21 @@ export function serveScene(opts: ServeSceneOptions = {}): void {
           const e = kept.get(m.id);
           kept.delete(m.id);
           if (e) for (const k of Array.isArray(m.keys) ? m.keys : [m.keys]) register(placementModelOf(e, k), encodedDigests.get(e));
-        } else if (m.kind === "bake" || m.kind === "encode") {
+        } else if (m.kind === "bake" || m.kind === "share" || m.kind === "encode") {
           highest = Math.max(highest, m.id);
           if (cancelled.delete(m.id)) {
             assembling.delete(m.id);
             continue;
           }
+          current = m.id;
+          currentCancelled = false;
           try {
             await job(m);
           } catch (err) {
             assembling.delete(m.id);
             fail(m.id, err);
           }
+          current = 0;
           // Yield after each job, so cancels (and newer jobs) that came in meanwhile are seen.
           if (queue.length) await new Promise<void>((r) => setTimeout(r, 0));
         }
@@ -420,7 +528,24 @@ export function serveScene(opts: ServeSceneOptions = {}): void {
     if (m.kind === "cancel") {
       kept.delete(m.id);
       assembling.delete(m.id);
+      splitting.delete(m.id);
+      if (m.id === current) currentCancelled = true;
       if (m.id > highest || lookups.has(m.id)) cancelled.add(m.id);
+      return;
+    }
+    if (m.kind === "merge") {
+      // Not queued: the bake is this worker's oldest job, and its own share is done (the merge
+      // can only follow the `split`, posted in the task that baked it). A few ms.
+      const s = splitting.get(m.id);
+      if (!s) return; // cancelled meanwhile
+      splitting.delete(m.id);
+      try {
+        const bake = mergePlacementShares(s.input, [s.share, ...m.shares]);
+        if (s.digest) track(s.store!.putBake(s.digest, normalizePlacement(bake)));
+        scope.postMessage({ kind: "baked", id: m.id, bake, ms: performance.now() - s.t0 }, placementTransferables(bake));
+      } catch (err) {
+        fail(m.id, err);
+      }
       return;
     }
     if (m.kind === "close") {
@@ -468,7 +593,60 @@ export interface SceneWorkerOptions {
    * in ms (default 10000).
    */
   closeTimeoutMs?: number;
+  /**
+   * The most workers one placement bake is split over, the scene worker itself included. With
+   * more than one, a bake that misses the cache and is big enough ({@link bakeShareUnits}) is
+   * cut into shares of equal marking work (the renderer's `splitPlacement`): the scene worker
+   * bakes one, helper workers the others, and the scene worker joins them into the bake a single
+   * worker makes, byte for byte, so the result and the cache are the same either way. Measured
+   * on a forest at 50 vox/m: 4.2 times faster with 8 workers on a 24-thread laptop, 4.1 times
+   * with 4 on a phone whose other four cores are slow (nothing more with 8).
+   *
+   * The helpers come from `spawn`, at the first bake that is split and never before, and only do
+   * shares: encoding, the cache and every answer stay with the scene worker. Each helper is sent
+   * the placement data of the models the set names (their sub-cells, 12 bytes per occupied 2³
+   * sub-cell; the main thread already holds them for the renderer), a few MiB per task, so a
+   * helper holds a copy of them until it is released ({@link bakeIdleMs}). Measured for a forest
+   * of twelve models (five trees, a house, shrubs and grasses): 39 MiB per helper at 50 vox/m,
+   * 5 MiB at 20.
+   *
+   * Default: one per core less one (`navigator.hardwareConcurrency`), at most 4 where the primary
+   * pointer is coarse (phones and tablets) and 8 elsewhere, at least 1. Pass 1 for a single
+   * worker, exactly as before this option: no helper is ever spawned. Other workers the app runs
+   * (a generator pool, chunk fills) compete for the same cores while a bake runs.
+   */
+  bakeWorkers?: number;
+  /**
+   * The least marking work per share of a split bake, in the bake's work units (one occupied 2³
+   * sub-cell of one instance marked, about 25 ns on a laptop and 60 ns on a phone; a posed
+   * instance counts its box's bricks, a turned scaled one its sub-cells' pieces). A bake is
+   * split over `min(bakeWorkers, floor(units / bakeShareUnits))` workers, and not at all below
+   * two shares, so a small set never spawns a worker. Default 2 000 000 (about 50 ms of marking on a laptop,
+   * 120 ms on a phone, against the tens of ms it takes to start a worker and send it the
+   * models): a set splits from 4 million units, and uses all of 8 workers from 16 million.
+   */
+  bakeShareUnits?: number;
+  /**
+   * How long the helpers of a split bake are kept once no split bake is in flight, in ms, before
+   * they are terminated and their copies of the models freed (default 5000: long enough that a
+   * coarse set followed by its fine one, or a retried bake, reuses them). 0 releases them at
+   * once, `Infinity` keeps them until `destroy()`. Released helpers are spawned again, and sent
+   * the models again, by the next bake that is split.
+   */
+  bakeIdleMs?: number;
 }
+
+/** {@link SceneWorkerOptions.bakeWorkers}' default: a worker per core less one, at most 4 on touch devices and 8 elsewhere. */
+function defaultBakeWorkers(): number {
+  const g = globalThis as { navigator?: { hardwareConcurrency?: number }; matchMedia?: (q: string) => { matches: boolean } };
+  const cores = g.navigator?.hardwareConcurrency ?? 4;
+  // Phones: half the cores are slow ones, and a prototype gained nothing beyond 4 there.
+  const coarse = typeof g.matchMedia === "function" && g.matchMedia("(pointer: coarse)").matches;
+  return Math.max(1, Math.min(coarse ? 4 : 8, cores - 1));
+}
+
+/** Bytes of placement data sent to a helper per task (each send is a structured clone on the main thread). */
+const FEED_BYTES = 4 << 20;
 
 /**
  * A worker that bakes static placements, from {@link makeSceneWorker}. Give it to
@@ -493,7 +671,14 @@ export interface PlacementWorker {
    * `onProgress` hears the bake's progress from the worker while it runs: `done` of `total` opaque
    * work units (use `done / total` as a fraction), first `(0, total)`, last `(total, total)`, about
    * every 50 ms, never decreasing. It stops once the bake settles, is aborted or the worker is
-   * destroyed.
+   * destroyed. For a bake split over several workers ({@link SceneWorkerOptions.bakeWorkers})
+   * `done` and `total` are the sums over the shares; until every share has reported, `total`
+   * counts the missing ones at the average of the others (the shares are balanced, so it barely
+   * moves), and `done` still never decreases.
+   *
+   * Aborting a split bake cancels every share that has not started; started ones run to the end
+   * on their workers, as a single bake does. A share that fails, or a helper that dies, rejects
+   * the bake; the next bake starts afresh.
    *
    * A worker with a cache (`serveScene({ cache })`) answers from it when it holds this bake (by a
    * digest of the input and of the models' placement data): no progress then, and
@@ -509,6 +694,7 @@ export interface PlacementWorker {
    * still running a job is terminated at once; an idle one first finishes its cache writes (up
    * to `closeTimeoutMs`), so what it just made is there next visit. Resolves when the worker has
    * been terminated; callers need not wait (and should not make a first frame wait for it).
+   * The helpers of split bakes are terminated at once: they write no cache.
    */
   destroy(): Promise<void>;
 }
@@ -602,6 +788,10 @@ function abortReason(signal: AbortSignal): unknown {
  * off the main thread (`layer.commitAsync()`): the main thread only packs the models' bricks to
  * send, claims their pool slots and applies the bake. Browser-only (needs `Worker`).
  *
+ * A big bake is split over several workers by default ({@link SceneWorkerOptions.bakeWorkers});
+ * the extra ones are spawned from the same `spawn` when such a bake comes and released a while
+ * after it. Nothing else changes for the caller: same result, same cache, same progress.
+ *
  * @example
  * ```ts
  * const worker = makeSceneWorker({
@@ -636,6 +826,10 @@ export function sceneWorker(opts: SceneWorkerOptions, name: string): SceneWorker
     keep?: boolean;
     /** Encodes looked up first: send the source after a miss. */
     onMiss?: () => void;
+    /** Bakes that may be split: the input, for the helpers. */
+    input?: PlacementInput;
+    /** Bakes the worker split. */
+    split?: Split;
   };
   const pending = new Map<number, Entry>();
   /** Encodings the worker keeps placement data for, and their encode ids. */
@@ -643,19 +837,163 @@ export function sceneWorker(opts: SceneWorkerOptions, name: string): SceneWorker
   let nextId = 1;
   let destroyed = false;
   const post = (m: SceneRequest, transfer?: Transferable[]) => worker.postMessage(m, transfer ?? []);
+
+  // --- bakes split over helper workers ---
+  const bakeWorkers = Math.max(1, Math.floor(opts.bakeWorkers ?? defaultBakeWorkers()) || 1);
+  const shareUnits = Math.max(1, opts.bakeShareUnits ?? 2_000_000);
+  const idleMs = opts.bakeIdleMs ?? 5000;
+  /** A worker that only bakes shares, and the model keys it has been sent. */
+  interface Helper {
+    worker: Worker;
+    keys: Set<number>;
+    /** The sends to it so far, in order: models are fed in slices, then the share. */
+    feed: Promise<void>;
+    dead?: boolean;
+  }
+  /** A split bake: the helpers still owing a share (`posted` once theirs was sent), and the shares in. */
+  interface Split {
+    on: Map<Helper, { slot: number; posted: boolean }>;
+    shares: PlacementShare[];
+    /** Progress per share (0 is the scene worker's), as last heard. */
+    parts: ({ done: number; total: number } | undefined)[];
+    done: number;
+  }
+  const helpers: Helper[] = [];
+  /** The registered models, for helpers (the renderer's own objects; nothing is copied here). Kept only when bakes may split. */
+  const models = new Map<number, PlacementModel>();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const releaseHelpers = () => {
+    clearTimeout(idleTimer);
+    idleTimer = undefined;
+    for (const h of helpers.splice(0)) {
+      h.dead = true;
+      h.worker.terminate();
+    }
+  };
+  /** No split bake in flight any more: release the helpers after the idle time. */
+  const idle = () => {
+    if (!helpers.length || idleTimer !== undefined || idleMs === Infinity) return;
+    for (const p of pending.values()) if (p.split) return;
+    if (idleMs <= 0) return releaseHelpers();
+    idleTimer = setTimeout(releaseHelpers, idleMs);
+  };
+  /** The sum of a split bake's shares, the ones not heard from yet counted at the others' average. */
+  const splitProgress = (p: Entry, slot: number, done: number, total: number) => {
+    const s = p.split!;
+    s.parts[slot] = { done, total };
+    let d = 0, t = 0, known = 0;
+    for (const part of s.parts) {
+      if (!part) continue;
+      d += part.done;
+      t += part.total;
+      known++;
+    }
+    const whole = known === s.parts.length ? t : Math.round((t * s.parts.length) / known);
+    s.done = Math.max(s.done, Math.min(d, whole));
+    p.onProgress?.(Math.min(s.done, whole), whole);
+  };
+  const failBake = (id: number, err: unknown) => {
+    const p = settle(id);
+    if (!p) return;
+    post({ kind: "cancel", id });
+    p.reject(err);
+  };
+  const spawnHelper = (): Helper => {
+    const h: Helper = { worker: opts.spawn(), keys: new Set(), feed: Promise.resolve() };
+    h.worker.onmessage = (ev: MessageEvent<SceneResponse>) => {
+      const m = ev.data;
+      if (m.kind !== "progress" && m.kind !== "shared" && m.kind !== "error") return;
+      const p = pending.get(m.id);
+      const at = p?.split?.on.get(h);
+      if (!p || !at) return; // settled, aborted, or not this helper's share
+      if (m.kind === "progress") return splitProgress(p, at.slot, m.done, m.total);
+      const s = p.split!;
+      if (m.kind === "error") return failBake(m.id, new Error(m.message));
+      s.on.delete(h);
+      s.shares.push(m.share);
+      // The last share in: the scene worker joins them with its own and answers `baked`.
+      if (!s.on.size) post({ kind: "merge", id: m.id, shares: s.shares }, s.shares.flatMap(placementShareTransferables));
+    };
+    h.worker.onerror = (ev: ErrorEvent) => {
+      h.dead = true;
+      const i = helpers.indexOf(h);
+      if (i >= 0) helpers.splice(i, 1);
+      h.worker.terminate();
+      for (const [id, p] of [...pending]) if (p.split?.on.has(h)) failBake(id, new Error(ev.message || `${name} failed (a helper of a split bake)`));
+    };
+    return h;
+  };
+  /** Send helper `h` the models `input` names that it lacks, a few MiB per task, then its share. */
+  const feed = (h: Helper, id: number, input: PlacementInput, range: PlacementRange) => {
+    const live = () => !destroyed && !h.dead && !!pending.get(id)?.split?.on.has(h);
+    h.feed = h.feed.then(async () => {
+      let bytes = 0;
+      for (const key of new Set(input.models)) {
+        if (!key || h.keys.has(key)) continue;
+        if (!live()) return;
+        const model = models.get(key);
+        if (!model) continue; // dropped meanwhile: the share fails as the bake does
+        h.keys.add(key);
+        h.worker.postMessage({ kind: "model", model } satisfies SceneRequest);
+        bytes += model.subs.byteLength;
+        if (bytes >= FEED_BYTES) {
+          bytes = 0;
+          await new Promise<void>((r) => setTimeout(r, 0));
+        }
+      }
+      if (!live()) return;
+      pending.get(id)!.split!.on.get(h)!.posted = true;
+      // One message, so instances sharing a `parts` object still share it on the helper.
+      h.worker.postMessage({ kind: "share", id, input, range } satisfies SceneRequest);
+    }).catch((err) => failBake(id, err)); // a send threw: the chain stays usable
+  };
+  /** The scene worker split bake `id`: hand every other range that is not empty to a helper. */
+  const startSplit = (id: number, p: Entry, ranges: PlacementRange[]) => {
+    const todo = ranges.slice(1).filter((r) => r.hi > r.lo);
+    if (!todo.length || !p.input) return;
+    clearTimeout(idleTimer);
+    idleTimer = undefined;
+    const s: Split = { on: new Map(), shares: [], parts: new Array(todo.length + 1).fill(undefined), done: 0 };
+    p.split = s;
+    try {
+      todo.forEach((range, i) => {
+        if (pending.get(id) !== p) return; // settled meanwhile
+        const h = (helpers[i] ??= spawnHelper());
+        s.on.set(h, { slot: i + 1, posted: false });
+        feed(h, id, p.input!, range);
+      });
+    } catch (err) {
+      failBake(id, err); // `spawn` threw
+    }
+  };
+
   const settle = (id: number) => {
     const p = pending.get(id);
     if (!p) return undefined;
     pending.delete(id);
     p.detach?.();
+    if (p.split) {
+      // Shares not baked yet are skipped; one that has started runs to the end, and is dropped.
+      for (const [h, at] of p.split.on) if (at.posted && !h.dead) h.worker.postMessage({ kind: "cancel", id } satisfies SceneRequest);
+      p.split.on.clear();
+      idle();
+    }
     return p;
   };
   worker.onmessage = (ev: MessageEvent<SceneResponse>) => {
     const m = ev.data;
     if (m.kind === "progress") {
-      pending.get(m.id)?.onProgress?.(m.done, m.total); // unknown, aborted or settled ids: ignored
+      const p = pending.get(m.id); // unknown, aborted or settled ids: ignored
+      if (p?.split) splitProgress(p, 0, m.done, m.total);
+      else p?.onProgress?.(m.done, m.total);
       return;
     }
+    if (m.kind === "split") {
+      const p = pending.get(m.id);
+      if (p) startSplit(m.id, p, m.ranges);
+      return;
+    }
+    if (m.kind === "shared") return; // only helpers are asked for shares
     if (m.kind === "closed") {
       closed?.();
       return;
@@ -682,7 +1020,7 @@ export function sceneWorker(opts: SceneWorkerOptions, name: string): SceneWorker
     } else p.reject(new Error(m.message));
   };
   worker.onerror = (ev: ErrorEvent) => {
-    for (const id of [...pending.keys()]) settle(id)!.reject(new Error(ev.message || `${name} failed`));
+    for (const id of [...pending.keys()]) settle(id)?.reject(new Error(ev.message || `${name} failed`));
     closed?.();
   };
 
@@ -712,15 +1050,21 @@ export function sceneWorker(opts: SceneWorkerOptions, name: string): SceneWorker
     register(model) {
       if (destroyed || keys.has(model.key)) return;
       keys.add(model.key);
+      if (bakeWorkers > 1) models.set(model.key, model);
       post({ kind: "model", model });
     },
     has: (key) => keys.has(key),
     drop(key) {
       if (destroyed || !keys.delete(key)) return;
       post({ kind: "drop", key });
+      models.delete(key);
+      for (const h of helpers) if (h.keys.delete(key)) h.worker.postMessage({ kind: "drop", key } satisfies SceneRequest);
     },
     bake(input, o = {}) {
-      return job<PlacementBake>(o, {}, (id) => post(o.cache === false ? { kind: "bake", id, input, cache: false } : { kind: "bake", id, input }));
+      // One worker: the message, and so everything after it, is what it was before bakes could split.
+      if (bakeWorkers < 2) return job<PlacementBake>(o, {}, (id) => post(o.cache === false ? { kind: "bake", id, input, cache: false } : { kind: "bake", id, input }));
+      const split: BakeSplit = { workers: bakeWorkers, shareUnits };
+      return job<PlacementBake>(o, { input }, (id) => post(o.cache === false ? { kind: "bake", id, input, cache: false, split } : { kind: "bake", id, input, split }));
     },
     fromCache: (result) => cachedResults.has(result),
     encode(src, o = {}) {
@@ -802,6 +1146,8 @@ export function sceneWorker(opts: SceneWorkerOptions, name: string): SceneWorker
         keys.add(x.key);
         const o: PlacementKeys = { key: x.key, poseKey: x.poseKey };
         if (x.scale !== undefined && x.scale !== 1) o.scale = x.scale;
+        // For helpers: a view of the encoding the main thread holds anyway (no copy).
+        if (bakeWorkers > 1) models.set(x.key, placementModelOf(encoded, o));
         return o;
       });
       post({ kind: "keys", id, keys: sent.length === 1 ? sent[0] : sent });
@@ -822,6 +1168,8 @@ export function sceneWorker(opts: SceneWorkerOptions, name: string): SceneWorker
       const busy = pending.size > 0;
       for (const id of [...pending.keys()]) settle(id)!.reject(new Error(`${name} destroyed`));
       keys.clear();
+      models.clear();
+      releaseHelpers(); // they hold no cache writes
       if (busy) {
         worker.terminate();
         return Promise.resolve();

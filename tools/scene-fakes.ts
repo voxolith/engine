@@ -164,7 +164,7 @@ export function slicedTarget(bricksPerStep: number) {
 
 export function channel(opts: Pick<ServeSceneOptions, "cache"> = {}) {
   const sent: SceneRequest[] = [];
-  const state = { hold: false, held: [] as SceneResponse[], encodes: 0, bakes: 0, cachedEncodes: 0, cachedBakes: 0, progress: 0, terminated: false };
+  const state = { hold: false, held: [] as SceneResponse[], encodes: 0, bakes: 0, cachedEncodes: 0, cachedBakes: 0, progress: 0, splits: 0, shares: 0, errors: 0, terminated: false };
   let toMain: ((ev: MessageEvent<SceneResponse>) => void) | null = null;
   const scope = {
     onmessage: null as ((ev: { data: SceneRequest }) => void) | null,
@@ -172,6 +172,9 @@ export function channel(opts: Pick<ServeSceneOptions, "cache"> = {}) {
       if (msg.kind === "encoded") msg.cached ? state.cachedEncodes++ : state.encodes++;
       if (msg.kind === "baked") msg.cached ? state.cachedBakes++ : state.bakes++;
       if (msg.kind === "progress") state.progress++;
+      if (msg.kind === "split") state.splits++;
+      if (msg.kind === "shared") state.shares++;
+      if (msg.kind === "error") state.errors++;
       const copy = structuredClone(msg, { transfer: transfer as Transferable[] });
       if (state.hold) state.held.push(copy);
       else setTimeout(() => toMain?.({ data: copy } as MessageEvent<SceneResponse>), 0);
@@ -190,6 +193,22 @@ export function channel(opts: Pick<ServeSceneOptions, "cache"> = {}) {
   };
   const release = () => { const h = state.held.splice(0); state.hold = false; for (const m of h) toMain?.({ data: m } as MessageEvent<SceneResponse>); };
   return { spawn: () => worker as unknown as Worker, sent, state, release, worker };
+}
+/**
+ * Several workers from one `spawn`, as a split bake uses them: every call makes a worker side of
+ * its own (the first is the scene worker, the rest helpers), all with the same options.
+ */
+export function farm(opts: Pick<ServeSceneOptions, "cache"> = {}, onSpawn?: (ch: ReturnType<typeof channel>, index: number) => void) {
+  const all: ReturnType<typeof channel>[] = [];
+  return {
+    all,
+    spawn: () => {
+      const ch = channel(opts);
+      all.push(ch);
+      onSpawn?.(ch, all.length - 1);
+      return ch.spawn();
+    },
+  };
 }
 export const kinds = (list: readonly SceneRequest[], kind: SceneRequest["kind"]) => list.filter((m) => m.kind === kind);
 

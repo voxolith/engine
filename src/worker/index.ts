@@ -21,7 +21,8 @@
  * placements ({@link makeSceneWorker} on the main thread, {@link serveScene} in the worker), for
  * `makeInstanceLayer(target, { worker })` and its `commitAsync()`. With its `cache` option it keeps
  * the encodings and bakes in IndexedDB too ({@link openSceneCache}, {@link openSceneCacheControls}),
- * so a warm visit skips both.
+ * so a warm visit skips both. A big bake is split over several workers spawned from the same
+ * entry (`SceneWorkerOptions.bakeWorkers`), with the same result.
  *
  * Ground chunks fill on workers too: {@link makeChunkFillPool} on the main thread is a
  * `makeChunkedWorld({ fill })` source, and {@link serveChunks} in the worker rebuilds the app's
@@ -48,7 +49,7 @@ export {
 export type { ModelCache, ModelCacheOptions, ModelCacheEntry, ModelCacheFilter, ModelCacheControls, CacheStore, CacheRecord, PackedEntity } from "./cache";
 export type { GenerateRequest, CloseRequest, WorkerRequest, WorkerResponse } from "./protocol";
 export { makeSceneWorker, serveScene } from "./scene";
-export type { SceneWorker, SceneWorkerOptions, SceneEncodeOptions, ServeSceneOptions, ServeSceneCacheOptions, SceneRequest, SceneResponse, EncodeSource } from "./scene";
+export type { SceneWorker, SceneWorkerOptions, SceneEncodeOptions, ServeSceneOptions, ServeSceneCacheOptions, SceneRequest, SceneResponse, EncodeSource, BakeSplit } from "./scene";
 export { openSceneCache, openSceneCacheOn, makeSceneCache, openSceneCacheControls, makeSceneCacheControls } from "./scene-cache";
 export type { SceneCache, SceneCacheOptions, SceneCacheEntry, SceneCacheFilter, SceneCacheControls, SceneCacheKind } from "./scene-cache";
 export type { PlacementWorker, PlacementRequest, PlacementResponse } from "./placement";
